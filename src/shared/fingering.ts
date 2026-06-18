@@ -15,6 +15,7 @@ export function transposeScore(score: ScoreModel, semitones: number): ScoreModel
   const next = cloneScore(score);
   for (const track of next.tracks) {
     for (const note of track.notes) {
+      note.originalMidi = note.originalMidi ?? note.midi;
       note.midi = clampMidi(note.midi + semitones);
       note.tab = undefined;
     }

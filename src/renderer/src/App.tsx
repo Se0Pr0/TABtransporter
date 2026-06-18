@@ -25,6 +25,7 @@ import type {
   LogInfo,
   OmrProgress,
   OpenedScoreFile,
+  NoteEvent,
   ScoreModel,
   TransposeOptions
 } from "../../shared/types";
@@ -338,7 +339,11 @@ export function App() {
               <small>변환하기를 누른 뒤 저장됩니다</small>
             </div>
             {convertedScore ? (
-              <TabPreview score={convertedScore} activeNoteId={playback.activeNoteId} />
+              hasOriginalLayout(convertedScore) && openedFile ? (
+                <LayoutRewritePreview file={openedFile} score={convertedScore} activeNoteId={playback.activeNoteId} />
+              ) : (
+                <TabPreview score={convertedScore} activeNoteId={playback.activeNoteId} />
+              )
             ) : (
               <PendingResult />
             )}
@@ -523,6 +528,141 @@ function AnalysisOverlay({ progress, fileName }: { progress: OmrProgress; fileNa
 
 function hasOriginalLayout(score: ScoreModel): boolean {
   return score.tracks.some((track) => track.notes.some((note) => note.originalSource));
+}
+
+const STAFF_PX_PER_SEMITONE = 3.8;
+const TAB_OFFSET_PX = 76;
+
+function LayoutRewriteNote({
+  note,
+  pageWidth,
+  pageHeight,
+  active
+}: {
+  note: NoteEvent;
+  pageWidth: number;
+  pageHeight: number;
+  active: boolean;
+}) {
+  const source = note.originalSource!;
+  const sourceCenterX = source.x + source.width / 2;
+  const sourceCenterY = source.y + source.height / 2;
+  const midiDelta = note.midi - (note.originalMidi ?? note.midi);
+  const rewrittenY = sourceCenterY - midiDelta * STAFF_PX_PER_SEMITONE;
+  const tabY = sourceCenterY + TAB_OFFSET_PX + (note.tab ? (note.tab.stringNumber - 1) * 8 : 0);
+
+  return (
+    <>
+      <span
+        className="layout-note-mask"
+        style={{
+          left: `${(sourceCenterX / pageWidth) * 100}%`,
+          top: `${(sourceCenterY / pageHeight) * 100}%`
+        }}
+      />
+      <span
+        className={`layout-rewrite-note ${active ? "active" : ""}`}
+        style={{
+          left: `${(sourceCenterX / pageWidth) * 100}%`,
+          top: `${(rewrittenY / pageHeight) * 100}%`
+        }}
+        title={midiToNoteName(note.midi)}
+      />
+      {note.tab && (
+        <>
+          <span
+            className="layout-tab-mask"
+            style={{
+              left: `${(sourceCenterX / pageWidth) * 100}%`,
+              top: `${(tabY / pageHeight) * 100}%`
+            }}
+          />
+          <span
+            className={`layout-rewrite-tab ${active ? "active" : ""}`}
+            style={{
+              left: `${(sourceCenterX / pageWidth) * 100}%`,
+              top: `${(tabY / pageHeight) * 100}%`
+            }}
+            title={`${note.tab.stringNumber}번줄 ${note.tab.fret}프렛`}
+          >
+            {note.tab.fret}
+          </span>
+        </>
+      )}
+    </>
+  );
+}
+
+function LayoutRewritePreview({
+  file,
+  score,
+  activeNoteId
+}: {
+  file: OpenedScoreFile;
+  score: ScoreModel;
+  activeNoteId?: string;
+}) {
+  const notes = score.tracks.flatMap((track) => track.notes).filter((note) => note.originalSource);
+  const layoutPages = score.layoutPages?.filter((page) => page.width > 0 && page.height > 0) ?? [];
+
+  if (!notes.length) {
+    return <TabPreview score={score} activeNoteId={activeNoteId} />;
+  }
+
+  if (layoutPages.length) {
+    return (
+      <div className="layout-preview layout-rewrite-preview" aria-label="원본 레이아웃 보존 변환 결과">
+        {layoutPages.map((page) => {
+          const pageNotes = notes.filter((note) => note.originalSource?.page === page.page);
+          return (
+            <div className="layout-page" key={page.page} style={{ aspectRatio: `${page.width} / ${page.height}` }}>
+              {page.dataUrl && <img className="layout-page-source" src={page.dataUrl} alt={`${page.page}페이지 변환 악보`} />}
+              <div className="layout-overlay">
+                {pageNotes.map((note) => {
+                  const source = note.originalSource!;
+                  return (
+                    <LayoutRewriteNote
+                      key={note.id}
+                      note={note}
+                      pageWidth={source.pageWidth ?? page.width}
+                      pageHeight={source.pageHeight ?? page.height}
+                      active={activeNoteId === note.id}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  if (file.kind === "pdf") {
+    return <TabPreview score={score} activeNoteId={activeNoteId} />;
+  }
+
+  const width = Math.max(...notes.map((note) => (note.originalSource?.x ?? 0) + (note.originalSource?.width ?? 0)), 1);
+  const height = Math.max(...notes.map((note) => (note.originalSource?.y ?? 0) + (note.originalSource?.height ?? 0)), 1);
+
+  return (
+    <div className="layout-preview layout-rewrite-preview" aria-label="원본 레이아웃 보존 변환 결과">
+      <div className="layout-page" style={{ aspectRatio: `${width} / ${height}` }}>
+        <img className="layout-page-source" src={file.dataUrl} alt="변환 악보" />
+        <div className="layout-overlay">
+          {notes.map((note) => (
+            <LayoutRewriteNote
+              key={note.id}
+              note={note}
+              pageWidth={note.originalSource?.pageWidth ?? width}
+              pageHeight={note.originalSource?.pageHeight ?? height}
+              active={activeNoteId === note.id}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function LayoutPreview({

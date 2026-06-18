@@ -50,6 +50,7 @@ export interface NoteEvent {
   beat: number;
   durationBeats: number;
   midi: number;
+  originalMidi?: number;
   velocity?: number;
   tab?: TabPosition;
   source?: "omr" | "manual" | "demo";

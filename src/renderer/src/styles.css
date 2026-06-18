@@ -435,6 +435,68 @@ button:disabled {
   background: #e8f1ef;
 }
 
+.layout-rewrite-preview .layout-page {
+  background: #ffffff;
+}
+
+.layout-note-mask,
+.layout-tab-mask,
+.layout-rewrite-note,
+.layout-rewrite-tab {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.layout-note-mask {
+  width: 28px;
+  height: 48px;
+  background: #ffffff;
+}
+
+.layout-rewrite-note {
+  width: 11px;
+  height: 8px;
+  border-radius: 50%;
+  background: #111111;
+  transform: translate(-50%, -50%) rotate(-18deg);
+}
+
+.layout-rewrite-note::after {
+  content: "";
+  position: absolute;
+  right: -1px;
+  bottom: 4px;
+  width: 1px;
+  height: 28px;
+  background: #111111;
+  transform: rotate(18deg);
+  transform-origin: bottom center;
+}
+
+.layout-tab-mask {
+  width: 22px;
+  height: 14px;
+  background: #ffffff;
+}
+
+.layout-rewrite-tab {
+  min-width: 14px;
+  min-height: 12px;
+  display: inline-grid;
+  place-items: center;
+  background: #ffffff;
+  color: #111111;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.layout-rewrite-note.active,
+.layout-rewrite-tab.active {
+  outline: 1.5px solid #2f5f6d;
+}
+
 .tab-preview {
   padding: 18px;
   overflow: auto;

@@ -1,4 +1,4 @@
-import type { FingeringWarning, NoteEvent, ScoreModel, TransposeOptions } from "./types";
+import type { FingeringWarning, NoteEvent, ScoreLayoutPage, ScoreModel, TransposeOptions } from "./types";
 import { getInstrumentPreset } from "./instruments";
 import { midiToNoteName } from "./pitch";
 
@@ -12,6 +12,13 @@ export interface ExportDocumentOptions {
 
 export function buildExportHtml(options: ExportDocumentOptions): string {
   const { score, sourceName, instrumentName, transposeOptions, warnings } = options;
+  const layoutPages = score.layoutPages?.filter((page) => page.width > 0 && page.height > 0 && page.dataUrl) ?? [];
+  const layoutNotes = score.tracks.flatMap((track) => track.notes).filter((note) => note.originalSource);
+
+  if (layoutPages.length && layoutNotes.length) {
+    return buildLayoutPreservingHtml(options, layoutPages, layoutNotes);
+  }
+
   const systems = score.tracks.map((track) => {
     const preset = getInstrumentPreset(track.instrumentPresetId);
     const measures = groupByMeasure(track.notes);
@@ -223,6 +230,185 @@ export function buildExportHtml(options: ExportDocumentOptions): string {
     </main>
   </body>
 </html>`;
+}
+
+const STAFF_PX_PER_SEMITONE = 3.8;
+const TAB_OFFSET_PX = 76;
+
+function buildLayoutPreservingHtml(
+  options: ExportDocumentOptions,
+  pages: ScoreLayoutPage[],
+  notes: NoteEvent[]
+): string {
+  const { score, sourceName, instrumentName, transposeOptions, warnings } = options;
+  const pageHtml = pages
+    .map((page) => {
+      const pageNotes = notes.filter((note) => note.originalSource?.page === page.page);
+      return `
+        <section class="source-page" style="aspect-ratio:${page.width}/${page.height}">
+          <img src="${page.dataUrl}" alt="${page.page}페이지 변환 악보" />
+          <div class="rewrite-layer">
+            ${pageNotes.map((note) => renderLayoutRewriteNote(note, page)).join("")}
+          </div>
+        </section>
+      `;
+    })
+    .join("");
+
+  return `<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>${escapeHtml(score.title)} 변환 결과</title>
+    <style>
+      @page {
+        size: A4;
+        margin: 0;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: #ffffff;
+        color: #111111;
+        font-family: "Segoe UI", "Malgun Gothic", Arial, sans-serif;
+      }
+
+      .source-page {
+        position: relative;
+        width: 100vw;
+        max-width: 210mm;
+        margin: 0 auto;
+        overflow: hidden;
+        page-break-after: always;
+        background: #ffffff;
+      }
+
+      .source-page:last-of-type {
+        page-break-after: auto;
+      }
+
+      .source-page img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: fill;
+      }
+
+      .rewrite-layer {
+        position: absolute;
+        inset: 0;
+      }
+
+      .note-mask,
+      .tab-mask,
+      .rewrite-note,
+      .rewrite-tab {
+        position: absolute;
+        transform: translate(-50%, -50%);
+      }
+
+      .note-mask {
+        width: 28px;
+        height: 48px;
+        background: #ffffff;
+      }
+
+      .rewrite-note {
+        width: 11px;
+        height: 8px;
+        border-radius: 50%;
+        background: #111111;
+        transform: translate(-50%, -50%) rotate(-18deg);
+      }
+
+      .rewrite-note::after {
+        content: "";
+        position: absolute;
+        right: -1px;
+        bottom: 4px;
+        width: 1px;
+        height: 28px;
+        background: #111111;
+        transform: rotate(18deg);
+        transform-origin: bottom center;
+      }
+
+      .tab-mask {
+        width: 22px;
+        height: 14px;
+        background: #ffffff;
+      }
+
+      .rewrite-tab {
+        min-width: 14px;
+        min-height: 12px;
+        display: inline-grid;
+        place-items: center;
+        background: #ffffff;
+        color: #111111;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 1;
+      }
+
+      .export-meta {
+        display: none;
+      }
+
+      .warnings {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="export-meta">
+      <span>원본: ${escapeHtml(sourceName)}</span>
+      <span>악기: ${escapeHtml(instrumentName)}</span>
+      <span>조옮김: ${formatSemitones(transposeOptions.semitones)}</span>
+      <span>카포: ${transposeOptions.capo}</span>
+    </div>
+    ${pageHtml}
+    ${
+      warnings.length
+        ? `<section class="warnings"><strong>확인 필요</strong><ul>${warnings
+            .map((warning) => `<li>${escapeHtml(warning.message)}</li>`)
+            .join("")}</ul></section>`
+        : ""
+    }
+  </body>
+</html>`;
+}
+
+function renderLayoutRewriteNote(note: NoteEvent, page: ScoreLayoutPage): string {
+  const source = note.originalSource!;
+  const pageWidth = source.pageWidth ?? page.width;
+  const pageHeight = source.pageHeight ?? page.height;
+  const sourceCenterX = source.x + source.width / 2;
+  const sourceCenterY = source.y + source.height / 2;
+  const midiDelta = note.midi - (note.originalMidi ?? note.midi);
+  const rewrittenY = sourceCenterY - midiDelta * STAFF_PX_PER_SEMITONE;
+  const tabY = sourceCenterY + TAB_OFFSET_PX + (note.tab ? (note.tab.stringNumber - 1) * 8 : 0);
+  const noteLeft = `${(sourceCenterX / pageWidth) * 100}%`;
+  const noteTop = `${(sourceCenterY / pageHeight) * 100}%`;
+  const rewrittenTop = `${(rewrittenY / pageHeight) * 100}%`;
+  const tabTop = `${(tabY / pageHeight) * 100}%`;
+
+  return `
+    <span class="note-mask" style="left:${noteLeft};top:${noteTop}"></span>
+    <span class="rewrite-note" style="left:${noteLeft};top:${rewrittenTop}" title="${escapeHtml(midiToNoteName(note.midi))}"></span>
+    ${
+      note.tab
+        ? `<span class="tab-mask" style="left:${noteLeft};top:${tabTop}"></span>
+           <span class="rewrite-tab" style="left:${noteLeft};top:${tabTop}" title="${escapeHtml(
+             `${note.tab.stringNumber}번줄 ${note.tab.fret}프렛`
+           )}">${escapeHtml(String(note.tab.fret))}</span>`
+        : ""
+    }
+  `;
 }
 
 function groupByMeasure(notes: NoteEvent[]): Map<number, NoteEvent[]> {
