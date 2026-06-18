@@ -7,13 +7,19 @@ const runIfSampleExists = samplePath && existsSync(samplePath) ? describe : desc
 
 runIfSampleExists("Audiveris OMR integration", () => {
   it(
-    "converts a real PDF or image score into parsed note data",
+    "returns real converted data or a clear non-converted OMR failure",
     async () => {
       const result = await convertWithLocalOmr(samplePath!);
 
-      expect(result.status, JSON.stringify(result, null, 2)).toBe("converted");
-      expect(result.score?.tracks[0].notes.length).toBeGreaterThan(0);
-      expect(result.musicXmlPath ?? result.diagnostics.find((item) => item.includes("fallback"))).toBeTruthy();
+      if (result.status === "converted") {
+        expect(result.musicXmlPath).toBeTruthy();
+        expect(result.score?.tracks[0].notes.length).toBeGreaterThan(0);
+        return;
+      }
+
+      expect(result.status, JSON.stringify(result, null, 2)).toBe("failed");
+      expect(result.score).toBeUndefined();
+      expect(result.message).toMatch(/MusicXML|Audiveris|변환/);
     },
     240_000
   );

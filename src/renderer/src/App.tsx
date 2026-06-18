@@ -17,7 +17,6 @@ import { getInstrumentPreset, INSTRUMENT_PRESETS } from "../../shared/instrument
 import { transposeAndRemap } from "../../shared/fingering";
 import { midiToNoteName } from "../../shared/pitch";
 import { createEmptyScore } from "../../shared/score";
-import { buildExportHtml } from "../../shared/exportDocument";
 import type {
   AudiverisStatus,
   ConversionResult,
@@ -153,7 +152,7 @@ export function App() {
       setConversion(result);
       await refreshAudiverisStatus();
       await refreshLogInfo();
-      if (result.score && result.score.tracks.some((track) => track.notes.length > 0)) {
+      if (result.status === "converted" && result.score && result.score.tracks.some((track) => track.notes.length > 0)) {
         setSourceScore(result.score);
         setOmrProgress({
           percent: 100,
@@ -213,25 +212,14 @@ export function App() {
     setStatus("변환이 끝났습니다. 변환된 일반 음표와 TAB 운지를 확인한 뒤 재생하거나 저장하세요.");
   }
 
-  async function exportResult(format: "pdf" | "png") {
+  async function exportResult(_format: "pdf" | "png") {
     if (!convertedScore || !convertedMeta) {
       setStatus("먼저 변환하기를 눌러 변환된 악보를 만들어야 저장할 수 있습니다.");
       return;
     }
 
-    const html = buildExportHtml({
-      score: convertedScore,
-      sourceName: convertedMeta.sourceName,
-      instrumentName: convertedMeta.instrumentName,
-      transposeOptions: convertedMeta.options,
-      warnings
-    });
-    const result = await window.tabTransporter.exportCurrentView({
-      format,
-      html,
-      defaultFileName: `${convertedScore.title || "tabtransporter"}-변환결과.${format}`
-    });
-    setStatus(result.message);
+    setStatus("현재 PDF/PNG 저장은 원본 디자인 보존 출력이 아니므로 막았습니다. 원본 레이아웃 보존 출력 엔진이 필요합니다.");
+    return;
   }
 
   return (

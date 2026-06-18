@@ -125,7 +125,7 @@ export async function convertWithLocalOmr(sourcePath: string, onProgress?: Progr
       if (fallback) {
         const noteCount = fallback.score.tracks.reduce((sum, track) => sum + track.notes.length, 0);
         const fallbackMessage =
-          "Audiveris MusicXML 내보내기는 실패했지만 내부 OMR 인식 데이터로 임시 악보를 만들었습니다. 원본과 비교해서 확인하세요.";
+          "Audiveris가 정식 MusicXML을 만들지 못했습니다. 내부 OMR 데이터는 참고용일 뿐 완성 변환으로 사용하지 않습니다.";
         await writeAppLog("omr", "audiveris failed but fallback score was recovered", {
           sourcePath,
           exitCode: run.exitCode,
@@ -133,20 +133,20 @@ export async function convertWithLocalOmr(sourcePath: string, onProgress?: Progr
           omrPath: fallback.omrPath,
           notes: noteCount
         });
-        progress(100, "done", "내부 OMR 데이터로 임시 악보를 만들었습니다.", `${noteCount}개 음표`);
+        progress(100, "failed", "정식 MusicXML 변환에 실패했습니다.", `${noteCount}개 내부 음표는 참고용으로만 기록했습니다.`);
         return {
-          status: "converted",
+          status: "failed",
           sourcePath,
           message: fallbackMessage,
           logPath: run.logPath,
           logExcerpt: importantLines.length ? importantLines : tailLines(`${run.stdout}\n${run.stderr}`, 20),
-          score: fallback.score,
           diagnostics: [
             ...diagnostics,
             ...importantLines,
             `Audiveris 내부 OMR 파일: ${fallback.omrPath}`,
-            "주의: 이 결과는 MusicXML 정식 export가 아니라 Audiveris 내부 note-head 데이터로 복구한 임시 악보입니다.",
-            "주의: 박자와 음가는 4/4 기준 임시값이므로 원본과 비교 검수가 필요합니다."
+            `참고용 내부 OMR 음표 수: ${noteCount}`,
+            "정식 MusicXML export가 아니므로 변환 결과로 사용하지 않습니다.",
+            "원본 디자인 보존 변환은 정식 구조 악보 데이터가 확보된 경우에만 진행해야 합니다."
           ]
         };
       }
@@ -170,26 +170,26 @@ export async function convertWithLocalOmr(sourcePath: string, onProgress?: Progr
       if (fallback) {
         const noteCount = fallback.score.tracks.reduce((sum, track) => sum + track.notes.length, 0);
         const fallbackMessage =
-          "Audiveris MusicXML 결과는 없지만 내부 OMR 인식 데이터로 임시 악보를 만들었습니다. 원본과 비교해서 확인하세요.";
+          "Audiveris MusicXML 결과가 없습니다. 내부 OMR 데이터는 참고용일 뿐 완성 변환으로 사용하지 않습니다.";
         await writeAppLog("omr", "musicxml output not found but fallback score was recovered", {
           sourcePath,
           logPath,
           omrPath: fallback.omrPath,
           notes: noteCount
         });
-        progress(100, "done", "내부 OMR 데이터로 임시 악보를 만들었습니다.", `${noteCount}개 음표`);
+        progress(100, "failed", "정식 MusicXML 결과가 없습니다.", `${noteCount}개 내부 음표는 참고용으로만 기록했습니다.`);
         return {
-          status: "converted",
+          status: "failed",
           sourcePath,
           message: fallbackMessage,
           logPath,
           logExcerpt: logPath ? await readLogTail(logPath, 30).catch(() => undefined) : undefined,
-          score: fallback.score,
           diagnostics: [
             ...diagnostics,
             `Audiveris 내부 OMR 파일: ${fallback.omrPath}`,
-            "주의: 이 결과는 MusicXML 정식 export가 아니라 Audiveris 내부 note-head 데이터로 복구한 임시 악보입니다.",
-            "주의: 박자와 음가는 4/4 기준 임시값이므로 원본과 비교 검수가 필요합니다."
+            `참고용 내부 OMR 음표 수: ${noteCount}`,
+            "정식 MusicXML export가 아니므로 변환 결과로 사용하지 않습니다.",
+            "원본 디자인 보존 변환은 정식 구조 악보 데이터가 확보된 경우에만 진행해야 합니다."
           ]
         };
       }
