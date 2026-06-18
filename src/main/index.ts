@@ -1,8 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
-import { readFile, writeFile } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { ExportRequest, ExportResult, OpenedScoreFile } from "../shared/types";
 import { convertWithLocalOmr } from "./converter";
+import { ensureExtension, readScoreFile } from "./fileAccess";
 
 const isDev = !app.isPackaged;
 
@@ -108,35 +109,4 @@ function registerIpcHandlers(): void {
       };
     }
   });
-}
-
-async function readScoreFile(path: string): Promise<OpenedScoreFile> {
-  const extension = extname(path).toLowerCase();
-  const data = await readFile(path);
-  const mime = extension === ".pdf" ? "application/pdf" : imageMime(extension);
-
-  return {
-    path,
-    name: path.split(/[\\/]/).pop() ?? "악보",
-    kind: extension === ".pdf" ? "pdf" : "image",
-    dataUrl: `data:${mime};base64,${data.toString("base64")}`
-  };
-}
-
-function imageMime(extension: string): string {
-  switch (extension) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".webp":
-      return "image/webp";
-    case ".bmp":
-      return "image/bmp";
-    default:
-      return "image/png";
-  }
-}
-
-function ensureExtension(fileName: string, extension: string): string {
-  return fileName.toLowerCase().endsWith(`.${extension}`) ? fileName : `${fileName}.${extension}`;
 }

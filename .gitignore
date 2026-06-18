@@ -1,5 +1,7 @@
 node_modules/
 out/
+
+# 배포 산출물
 release/
 dist/
 .vite/
