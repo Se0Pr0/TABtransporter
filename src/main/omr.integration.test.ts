@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { basename } from "node:path";
 import { describe, expect, it } from "vitest";
 import { convertWithLocalOmr } from "./converter";
 
@@ -10,6 +11,11 @@ runIfSampleExists("Audiveris OMR integration", () => {
     "returns real converted data or a clear non-converted OMR failure",
     async () => {
       const result = await convertWithLocalOmr(samplePath!);
+      const sampleName = basename(samplePath!);
+
+      if (sampleName === "Back in time-bass.pdf") {
+        expect(result.status, JSON.stringify(result, null, 2)).toBe("converted");
+      }
 
       if (result.status === "converted") {
         expect(result.musicXmlPath).toBeTruthy();

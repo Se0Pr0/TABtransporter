@@ -1,4 +1,4 @@
-import { copyFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { spawn } from "node:child_process";
@@ -63,6 +63,11 @@ interface AudiverisRunResult {
   timedOut: boolean;
 }
 
+interface AudiverisRunOptions {
+  beforeOutputArgs?: string[];
+  label?: string;
+}
+
 interface OmrFallbackScore {
   score: ScoreModel;
   omrPath: string;
@@ -78,6 +83,18 @@ interface AudiverisHeadCandidate {
   height: number;
   midi: number;
   confidence: number;
+}
+
+interface PdfInfo {
+  pages: number;
+  widthPt: number;
+  heightPt: number;
+}
+
+interface SegmentedOmrResult {
+  score: ScoreModel;
+  musicXmlPath: string;
+  logExcerpt?: string[];
 }
 
 type ProgressSink = (progress: OmrProgress) => void;
@@ -122,6 +139,27 @@ export async function convertWithLocalOmr(sourcePath: string, onProgress?: Progr
 
     if (run.exitCode !== 0) {
       const message = summarizeAudiverisFailure(run);
+      progress(86, "omr", "전체 변환이 실패해 페이지별 변환을 다시 시도합니다.", run.logPath);
+      const segmented = await trySegmentedPdfOmr(audiverisPath, audiverisInputPath, workDir, sourcePath, progress, diagnostics);
+      if (segmented) {
+        const noteCount = segmented.score.tracks.reduce((sum, track) => sum + track.notes.length, 0);
+        await writeAppLog("omr", "segmented pdf conversion completed", {
+          sourcePath,
+          notes: noteCount,
+          musicXmlPath: segmented.musicXmlPath
+        });
+        progress(100, "done", "페이지/구간별 재분석으로 악보 변환이 끝났습니다.", `${noteCount}개 음표`);
+        return {
+          status: "converted",
+          sourcePath,
+          musicXmlPath: segmented.musicXmlPath,
+          logPath: run.logPath,
+          logExcerpt: segmented.logExcerpt ?? (importantLines.length ? importantLines : tailLines(`${run.stdout}\n${run.stderr}`, 20)),
+          message: "전체 변환은 실패했지만 페이지/구간별 재분석으로 MusicXML 변환을 완료했습니다.",
+          score: segmented.score,
+          diagnostics: [...diagnostics, ...importantLines]
+        };
+      }
       progress(88, "parsing", "MusicXML 내보내기는 실패했습니다. Audiveris 내부 인식 데이터로 복구를 시도합니다.", run.logPath);
       const fallback = await buildFallbackScoreFromOmr(workDir, basename(sourcePath), diagnostics);
       if (fallback) {
@@ -261,6 +299,350 @@ export async function convertWithLocalOmr(sourcePath: string, onProgress?: Progr
       await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
+}
+
+async function trySegmentedPdfOmr(
+  audiverisPath: string,
+  pdfPath: string,
+  workDir: string,
+  originalSourcePath: string,
+  progress: ProgressReporter,
+  diagnostics: string[]
+): Promise<SegmentedOmrResult | undefined> {
+  if (extname(pdfPath).toLowerCase() !== ".pdf") {
+    return undefined;
+  }
+
+  let pdfInfo: PdfInfo;
+  try {
+    pdfInfo = await readPdfInfo(pdfPath);
+  } catch (error) {
+    diagnostics.push(`페이지별 재분석을 건너뜁니다. pdfinfo 실행 실패: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+
+  const segmentedDir = await mkdtemp(join(workDir, "segmented-"));
+  const scoreParts: ScoreModel[] = [];
+  const logExcerpt: string[] = [];
+  diagnostics.push(`페이지별 재분석 시작: ${pdfInfo.pages}페이지`);
+
+  for (let page = 1; page <= pdfInfo.pages; page += 1) {
+    progress(86 + Math.min(8, page), "omr", `${page}페이지를 개별 분석하고 있습니다.`);
+    const pageDir = await mkdtemp(join(segmentedDir, `page-${page}-`));
+    const pageRun = await runAudiveris(audiverisPath, pdfPath, pageDir, originalSourcePath, progress, {
+      beforeOutputArgs: ["-sheets", String(page)],
+      label: `page-${page}`
+    });
+    const pageOutput = pageRun.exitCode === 0 ? await findMusicXml(pageDir) : undefined;
+
+    if (pageOutput) {
+      const musicXml = await readMusicXmlExport(pageOutput, pageDir);
+      const pageScore = parseMusicXmlToScore(musicXml, `${basename(originalSourcePath)} ${page}페이지`);
+      await attachAudiverisLayoutFromOmr(pageDir, pageScore, diagnostics);
+      if (pageScore.tracks.some((track) => track.notes.length > 0)) {
+        scoreParts.push(pageScore);
+        diagnostics.push(`${page}페이지 개별 MusicXML 변환 성공`);
+        logExcerpt.push(...extractImportantAudiverisLines(`${pageRun.stdout}\n${pageRun.stderr}`));
+        continue;
+      }
+    }
+
+    diagnostics.push(`${page}페이지 개별 변환 실패. 시스템 밴드 단위로 재분석합니다.`);
+    const bandScores = await convertPdfPageByBands(audiverisPath, pdfPath, page, pdfInfo, segmentedDir, originalSourcePath, progress, diagnostics);
+    if (bandScores.length) {
+      scoreParts.push(...bandScores);
+      continue;
+    }
+
+    diagnostics.push(`${page}페이지는 밴드 단위 재분석도 실패했습니다.`);
+    logExcerpt.push(...extractImportantAudiverisLines(`${pageRun.stdout}\n${pageRun.stderr}`));
+  }
+
+  const score = mergeScoreParts(scoreParts, basename(originalSourcePath));
+  const noteCount = score.tracks.reduce((sum, track) => sum + track.notes.length, 0);
+  if (noteCount === 0) {
+    diagnostics.push("페이지/구간별 재분석에서 사용할 수 있는 음표를 얻지 못했습니다.");
+    return undefined;
+  }
+
+  const musicXmlPath = join(segmentedDir, `${basename(originalSourcePath, extname(originalSourcePath))}-segmented.musicxml`);
+  await writeFile(musicXmlPath, scoreToMusicXml(score), "utf8");
+  diagnostics.push(`페이지/구간별 재분석 MusicXML: ${musicXmlPath}`);
+  diagnostics.push(`페이지/구간별 재분석 음표 수: ${noteCount}`);
+
+  return {
+    score,
+    musicXmlPath,
+    logExcerpt: logExcerpt.length ? logExcerpt.slice(-30) : undefined
+  };
+}
+
+async function convertPdfPageByBands(
+  audiverisPath: string,
+  pdfPath: string,
+  page: number,
+  pdfInfo: PdfInfo,
+  segmentedDir: string,
+  originalSourcePath: string,
+  progress: ProgressReporter,
+  diagnostics: string[]
+): Promise<ScoreModel[]> {
+  const dpi = 220;
+  const widthPx = Math.ceil((pdfInfo.widthPt / 72) * dpi);
+  const heightPx = Math.ceil((pdfInfo.heightPt / 72) * dpi);
+  const bandCount = Math.max(1, Math.ceil(heightPx / 430));
+  const bandHeight = Math.ceil(heightPx / bandCount);
+  const scores: ScoreModel[] = [];
+
+  for (let band = 0; band < bandCount; band += 1) {
+    const top = band * bandHeight;
+    const height = Math.min(bandHeight, heightPx - top);
+    if (height < 120) {
+      continue;
+    }
+
+    progress(90, "omr", `${page}페이지 ${band + 1}/${bandCount}구간을 분석하고 있습니다.`);
+    const bandDir = await mkdtemp(join(segmentedDir, `page-${page}-band-${band + 1}-`));
+    const imagePath = await renderPdfPageBand(pdfPath, page, widthPx, top, height, dpi, bandDir, `page-${page}-band-${band + 1}`);
+    const run = await runAudiveris(audiverisPath, imagePath, bandDir, originalSourcePath, progress, {
+      label: `page-${page}-band-${band + 1}`
+    });
+    if (run.exitCode !== 0) {
+      diagnostics.push(`${page}페이지 ${band + 1}구간 MusicXML 변환 실패`);
+      continue;
+    }
+
+    const output = await findMusicXml(bandDir);
+    if (!output) {
+      diagnostics.push(`${page}페이지 ${band + 1}구간 MusicXML 결과 파일 없음`);
+      continue;
+    }
+
+    const musicXml = await readMusicXmlExport(output, bandDir);
+    const score = parseMusicXmlToScore(musicXml, `${basename(originalSourcePath)} ${page}페이지 ${band + 1}구간`);
+    await attachAudiverisLayoutFromOmr(bandDir, score, diagnostics);
+    if (!score.tracks.some((track) => track.notes.length > 0)) {
+      diagnostics.push(`${page}페이지 ${band + 1}구간은 음표가 없어 제외`);
+      continue;
+    }
+    scores.push(score);
+    diagnostics.push(`${page}페이지 ${band + 1}구간 MusicXML 변환 성공`);
+  }
+
+  return scores;
+}
+
+function readPdfInfo(pdfPath: string): Promise<PdfInfo> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("pdfinfo", [pdfPath], { windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `pdfinfo exited with code ${code}`));
+        return;
+      }
+      const pages = Number.parseInt(/Pages:\s+(\d+)/i.exec(stdout)?.[1] ?? "0", 10);
+      const pageSizeMatch = /Page size:\s+([\d.]+)\s+x\s+([\d.]+)\s+pts/i.exec(stdout);
+      const widthPt = Number.parseFloat(pageSizeMatch?.[1] ?? "0");
+      const heightPt = Number.parseFloat(pageSizeMatch?.[2] ?? "0");
+      if (!pages || !widthPt || !heightPt) {
+        reject(new Error("pdfinfo output did not include page count and page size"));
+        return;
+      }
+      resolve({ pages, widthPt, heightPt });
+    });
+  });
+}
+
+function renderPdfPageBand(
+  pdfPath: string,
+  page: number,
+  width: number,
+  top: number,
+  height: number,
+  dpi: number,
+  outputDir: string,
+  label: string
+): Promise<string> {
+  const prefix = join(outputDir, label);
+  const args = [
+    "-f",
+    String(page),
+    "-l",
+    String(page),
+    "-png",
+    "-r",
+    String(dpi),
+    "-x",
+    "0",
+    "-y",
+    String(top),
+    "-W",
+    String(width),
+    "-H",
+    String(height),
+    pdfPath,
+    prefix
+  ];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn("pdftoppm", args, { windowsHide: true });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", async (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `pdftoppm exited with code ${code}`));
+        return;
+      }
+      const files = await readdir(outputDir, { withFileTypes: true });
+      const image = files.find((entry) => entry.isFile() && entry.name.startsWith(label) && entry.name.endsWith(".png"));
+      if (!image) {
+        reject(new Error("pdftoppm did not create a PNG crop"));
+        return;
+      }
+      resolve(join(outputDir, image.name));
+    });
+  });
+}
+
+function mergeScoreParts(parts: ScoreModel[], title: string): ScoreModel {
+  const notes: NoteEvent[] = [];
+  let measureOffset = 0;
+  let noteIndex = 1;
+
+  for (const part of parts) {
+    const partNotes = part.tracks.flatMap((track) => track.notes);
+    if (!partNotes.length) {
+      continue;
+    }
+    const minMeasure = Math.min(...partNotes.map((note) => note.measure));
+    const maxMeasure = Math.max(...partNotes.map((note) => note.measure));
+    for (const note of partNotes) {
+      notes.push({
+        ...note,
+        id: `segmented-${noteIndex++}`,
+        measure: measureOffset + (note.measure - minMeasure + 1),
+        tab: note.tab ? { ...note.tab } : undefined,
+        originalSource: note.originalSource ? { ...note.originalSource } : undefined
+      });
+    }
+    measureOffset += Math.max(1, maxMeasure - minMeasure + 1);
+  }
+
+  return {
+    id: "segmented-omr-score",
+    title,
+    tempo: parts.find((part) => part.tempo)?.tempo ?? 92,
+    timeSignature: parts.find((part) => part.timeSignature)?.timeSignature ?? [4, 4],
+    tracks: [
+      {
+        id: "segmented-omr-track-1",
+        name: "페이지별 OMR 악보",
+        instrumentPresetId: "guitar-standard-6",
+        notes
+      }
+    ]
+  };
+}
+
+function scoreToMusicXml(score: ScoreModel): string {
+  const notesByMeasure = new Map<number, NoteEvent[]>();
+  for (const note of score.tracks.flatMap((track) => track.notes)) {
+    const notes = notesByMeasure.get(note.measure) ?? [];
+    notes.push(note);
+    notesByMeasure.set(note.measure, notes);
+  }
+
+  const measures = Array.from(notesByMeasure.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([measure, notes]) => {
+      const body = notes
+        .sort((a, b) => a.beat - b.beat || a.midi - b.midi)
+        .map((note) => {
+          const pitch = midiToMusicXmlPitch(note.midi);
+          return `      <note>
+        <pitch>
+          <step>${pitch.step}</step>${pitch.alter ? `\n          <alter>${pitch.alter}</alter>` : ""}
+          <octave>${pitch.octave}</octave>
+        </pitch>
+        <duration>${Math.max(1, Math.round(note.durationBeats))}</duration>
+        <type>quarter</type>
+      </note>`;
+        })
+        .join("\n");
+      const attributes =
+        measure === 1
+          ? `      <attributes>
+        <divisions>1</divisions>
+        <time>
+          <beats>${score.timeSignature[0]}</beats>
+          <beat-type>${score.timeSignature[1]}</beat-type>
+        </time>
+        <clef>
+          <sign>G</sign>
+          <line>2</line>
+        </clef>
+      </attributes>\n`
+          : "";
+      return `    <measure number="${measure}">
+${attributes}${body}
+    </measure>`;
+    })
+    .join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.1 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="3.1">
+  <movement-title>${escapeXml(score.title)}</movement-title>
+  <part-list>
+    <score-part id="P1">
+      <part-name>${escapeXml(score.tracks[0]?.name ?? "OMR")}</part-name>
+    </score-part>
+  </part-list>
+  <part id="P1">
+${measures}
+  </part>
+</score-partwise>`;
+}
+
+function midiToMusicXmlPitch(midi: number): { step: string; alter: number; octave: number } {
+  const octave = Math.floor(midi / 12) - 1;
+  const pitchClass = ((midi % 12) + 12) % 12;
+  const pitches = [
+    { step: "C", alter: 0 },
+    { step: "C", alter: 1 },
+    { step: "D", alter: 0 },
+    { step: "D", alter: 1 },
+    { step: "E", alter: 0 },
+    { step: "F", alter: 0 },
+    { step: "F", alter: 1 },
+    { step: "G", alter: 0 },
+    { step: "G", alter: 1 },
+    { step: "A", alter: 0 },
+    { step: "A", alter: 1 },
+    { step: "B", alter: 0 }
+  ];
+  return { ...pitches[pitchClass], octave };
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
 }
 
 async function buildFallbackScoreFromOmr(
@@ -600,10 +982,11 @@ async function runAudiveris(
   sourcePath: string,
   outputDir: string,
   originalSourcePath: string,
-  progress: ProgressReporter
+  progress: ProgressReporter,
+  options: AudiverisRunOptions = {}
 ): Promise<AudiverisRunResult> {
-  const args = ["-batch", "-export", "-output", outputDir, sourcePath];
-  const logPath = await createRunLogFile("omr", basename(originalSourcePath));
+  const args = ["-batch", "-export", ...(options.beforeOutputArgs ?? []), "-output", outputDir, sourcePath];
+  const logPath = await createRunLogFile("omr", options.label ? `${options.label}-${basename(originalSourcePath)}` : basename(originalSourcePath));
   await appendLogFile(
     logPath,
     [
