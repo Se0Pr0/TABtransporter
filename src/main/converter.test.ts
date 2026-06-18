@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMusicXmlToScore } from "./converter";
+import { parseAudiverisSheetHeadsToNotes, parseMusicXmlToScore } from "./converter";
 
 const SIMPLE_MUSIC_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <score-partwise version="4.0">
@@ -51,5 +51,26 @@ describe("MusicXML OMR parsing", () => {
     expect(score.tracks[0].notes.map((note) => note.midi)).toEqual([60, 64, 63]);
     expect(score.tracks[0].notes.map((note) => note.beat)).toEqual([1, 1, 2]);
     expect(score.tracks[0].notes.map((note) => note.durationBeats)).toEqual([1, 1, 2]);
+  });
+
+  it("recovers low-confidence notes from Audiveris internal sheet XML", () => {
+    const sheetXml = `
+      <sheet>
+        <clef kind="TREBLE" shape="G_CLEF" staff="1" />
+        <key fifths="1" staff="1" />
+        <head id="a" pitch="0" shape="NOTEHEAD_BLACK" grade="0.91" ctx-grade="0.72" staff="1">
+          <bounds x="10" y="20" w="6" h="6" />
+        </head>
+        <head id="b" pitch="1" shape="NOTEHEAD_BLACK" grade="0.88" ctx-grade="0.7" staff="1">
+          <bounds x="35" y="26" w="6" h="6" />
+        </head>
+      </sheet>`;
+
+    const notes = parseAudiverisSheetHeadsToNotes(sheetXml, 1);
+
+    expect(notes).toHaveLength(2);
+    expect(notes.map((note) => note.midi)).toEqual([71, 69]);
+    expect(notes.map((note) => note.beat)).toEqual([1, 2]);
+    expect(notes.every((note) => note.confidence !== undefined && note.confidence <= 0.55)).toBe(true);
   });
 });

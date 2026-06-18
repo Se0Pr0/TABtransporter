@@ -63,6 +63,21 @@ interface AudiverisRunResult {
   timedOut: boolean;
 }
 
+interface OmrFallbackScore {
+  score: ScoreModel;
+  omrPath: string;
+}
+
+interface AudiverisHeadCandidate {
+  id: string;
+  sheetNumber: number;
+  staff: number;
+  x: number;
+  y: number;
+  midi: number;
+  confidence: number;
+}
+
 type ProgressSink = (progress: OmrProgress) => void;
 type ProgressReporter = (percent: number, phase: OmrProgress["phase"], message: string, detail?: string) => void;
 
@@ -105,6 +120,36 @@ export async function convertWithLocalOmr(sourcePath: string, onProgress?: Progr
 
     if (run.exitCode !== 0) {
       const message = summarizeAudiverisFailure(run);
+      progress(88, "parsing", "MusicXML 내보내기는 실패했습니다. Audiveris 내부 인식 데이터로 복구를 시도합니다.", run.logPath);
+      const fallback = await buildFallbackScoreFromOmr(workDir, basename(sourcePath), diagnostics);
+      if (fallback) {
+        const noteCount = fallback.score.tracks.reduce((sum, track) => sum + track.notes.length, 0);
+        const fallbackMessage =
+          "Audiveris MusicXML 내보내기는 실패했지만 내부 OMR 인식 데이터로 임시 악보를 만들었습니다. 원본과 비교해서 확인하세요.";
+        await writeAppLog("omr", "audiveris failed but fallback score was recovered", {
+          sourcePath,
+          exitCode: run.exitCode,
+          logPath: run.logPath,
+          omrPath: fallback.omrPath,
+          notes: noteCount
+        });
+        progress(100, "done", "내부 OMR 데이터로 임시 악보를 만들었습니다.", `${noteCount}개 음표`);
+        return {
+          status: "converted",
+          sourcePath,
+          message: fallbackMessage,
+          logPath: run.logPath,
+          logExcerpt: importantLines.length ? importantLines : tailLines(`${run.stdout}\n${run.stderr}`, 20),
+          score: fallback.score,
+          diagnostics: [
+            ...diagnostics,
+            ...importantLines,
+            `Audiveris 내부 OMR 파일: ${fallback.omrPath}`,
+            "주의: 이 결과는 MusicXML 정식 export가 아니라 Audiveris 내부 note-head 데이터로 복구한 임시 악보입니다.",
+            "주의: 박자와 음가는 4/4 기준 임시값이므로 원본과 비교 검수가 필요합니다."
+          ]
+        };
+      }
       progress(100, "failed", message, run.logPath);
       await writeAppLog("omr", "audiveris failed", { sourcePath, exitCode: run.exitCode, logPath: run.logPath, message });
       return {
@@ -120,6 +165,34 @@ export async function convertWithLocalOmr(sourcePath: string, onProgress?: Progr
     const output = await findMusicXml(workDir);
 
     if (!output) {
+      progress(88, "parsing", "MusicXML 결과가 없어 내부 OMR 데이터로 복구를 시도합니다.", logPath);
+      const fallback = await buildFallbackScoreFromOmr(workDir, basename(sourcePath), diagnostics);
+      if (fallback) {
+        const noteCount = fallback.score.tracks.reduce((sum, track) => sum + track.notes.length, 0);
+        const fallbackMessage =
+          "Audiveris MusicXML 결과는 없지만 내부 OMR 인식 데이터로 임시 악보를 만들었습니다. 원본과 비교해서 확인하세요.";
+        await writeAppLog("omr", "musicxml output not found but fallback score was recovered", {
+          sourcePath,
+          logPath,
+          omrPath: fallback.omrPath,
+          notes: noteCount
+        });
+        progress(100, "done", "내부 OMR 데이터로 임시 악보를 만들었습니다.", `${noteCount}개 음표`);
+        return {
+          status: "converted",
+          sourcePath,
+          message: fallbackMessage,
+          logPath,
+          logExcerpt: logPath ? await readLogTail(logPath, 30).catch(() => undefined) : undefined,
+          score: fallback.score,
+          diagnostics: [
+            ...diagnostics,
+            `Audiveris 내부 OMR 파일: ${fallback.omrPath}`,
+            "주의: 이 결과는 MusicXML 정식 export가 아니라 Audiveris 내부 note-head 데이터로 복구한 임시 악보입니다.",
+            "주의: 박자와 음가는 4/4 기준 임시값이므로 원본과 비교 검수가 필요합니다."
+          ]
+        };
+      }
       progress(100, "failed", "Audiveris 실행은 끝났지만 MusicXML 결과 파일을 찾지 못했습니다.", logPath);
       await writeAppLog("omr", "musicxml output not found", { sourcePath, logPath });
       return {
@@ -185,6 +258,290 @@ export async function convertWithLocalOmr(sourcePath: string, onProgress?: Progr
       await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
+}
+
+async function buildFallbackScoreFromOmr(
+  workDir: string,
+  title: string,
+  diagnostics: string[]
+): Promise<OmrFallbackScore | undefined> {
+  const omrPath = await findOmrFile(workDir);
+  if (!omrPath) {
+    diagnostics.push("Audiveris 내부 OMR 파일을 찾지 못해 fallback 복구를 건너뜁니다.");
+    return undefined;
+  }
+
+  const extractDir = await mkdtemp(join(workDir, "omr-fallback-"));
+  const zipPath = join(extractDir, "book.zip");
+  await copyFile(omrPath, zipPath);
+  await expandZip(zipPath, extractDir);
+
+  const sheetXmlFiles = await findAudiverisSheetXmlFiles(extractDir);
+  const notes: NoteEvent[] = [];
+  let noteIndex = 1;
+
+  for (const sheetXmlFile of sheetXmlFiles) {
+    const xml = await readFile(sheetXmlFile.path, "utf8");
+    const parsed = parseAudiverisSheetHeadsToNotes(xml, sheetXmlFile.sheetNumber, noteIndex);
+    notes.push(...parsed);
+    noteIndex += parsed.length;
+  }
+
+  if (!notes.length) {
+    diagnostics.push(`Audiveris 내부 OMR 파일은 찾았지만 note-head 데이터를 읽지 못했습니다: ${omrPath}`);
+    return undefined;
+  }
+
+  diagnostics.push(`Audiveris 내부 OMR fallback 음표 수: ${notes.length}`);
+
+  return {
+    omrPath,
+    score: {
+      id: "omr-fallback-score",
+      title,
+      tempo: 92,
+      timeSignature: [4, 4],
+      tracks: [
+        {
+          id: "omr-fallback-track-1",
+          name: "OMR 임시 악보",
+          instrumentPresetId: "guitar-standard-6",
+          notes
+        }
+      ]
+    }
+  };
+}
+
+async function findOmrFile(directory: string): Promise<string | undefined> {
+  const entries = await readdir(directory, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const filePath = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      const nested = await findOmrFile(filePath);
+      if (nested) {
+        return nested;
+      }
+      continue;
+    }
+
+    if (entry.isFile() && extname(entry.name).toLowerCase() === ".omr") {
+      return filePath;
+    }
+  }
+
+  return undefined;
+}
+
+async function findAudiverisSheetXmlFiles(
+  directory: string
+): Promise<Array<{ path: string; sheetNumber: number }>> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const candidates: Array<{ path: string; sheetNumber: number }> = [];
+
+  for (const entry of entries) {
+    const filePath = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      candidates.push(...(await findAudiverisSheetXmlFiles(filePath)));
+      continue;
+    }
+
+    if (!entry.isFile() || extname(entry.name).toLowerCase() !== ".xml") {
+      continue;
+    }
+
+    const sheetMatch = /sheet#(\d+)\.xml$/i.exec(entry.name);
+    if (sheetMatch) {
+      candidates.push({ path: filePath, sheetNumber: Number.parseInt(sheetMatch[1], 10) || 1 });
+    }
+  }
+
+  return candidates.sort((a, b) => a.sheetNumber - b.sheetNumber || a.path.localeCompare(b.path));
+}
+
+export function parseAudiverisSheetHeadsToNotes(
+  sheetXml: string,
+  sheetNumber = 1,
+  startIndex = 1
+): NoteEvent[] {
+  const clefs = parseAudiverisClefs(sheetXml);
+  const keyFifths = parseAudiverisKeyFifths(sheetXml);
+  const heads: AudiverisHeadCandidate[] = [];
+  const headRegex = /<head\b([^>]*)>([\s\S]*?)<\/head>/gi;
+  let headMatch: RegExpExecArray | null;
+
+  while ((headMatch = headRegex.exec(sheetXml))) {
+    const attributes = headMatch[1];
+    const body = headMatch[2];
+    const shape = readXmlAttribute(attributes, "shape");
+    if (shape && !shape.includes("NOTEHEAD")) {
+      continue;
+    }
+
+    const pitch = readNumberAttribute(attributes, "pitch");
+    const staff = readIntegerAttribute(attributes, "staff") ?? 1;
+    const boundsMatch =
+      /<bounds\b[^>]*x="([^"]+)"[^>]*y="([^"]+)"[^>]*w="([^"]+)"[^>]*h="([^"]+)"/i.exec(body);
+    if (pitch === undefined || !boundsMatch) {
+      continue;
+    }
+
+    const x = Number.parseFloat(boundsMatch[1]);
+    const y = Number.parseFloat(boundsMatch[2]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      continue;
+    }
+
+    const clefKind = clefs.get(staff) ?? "TREBLE";
+    const midi = audiverisPitchToMidi(pitch, clefKind, keyFifths);
+    if (midi < 0 || midi > 127) {
+      continue;
+    }
+
+    const grade = readNumberAttribute(attributes, "grade");
+    const contextGrade = readNumberAttribute(attributes, "ctx-grade");
+    const rawConfidence = Math.min(...[grade, contextGrade].filter((value): value is number => value !== undefined));
+    const confidence = Number.isFinite(rawConfidence) ? Math.max(0.15, Math.min(0.55, rawConfidence)) : 0.3;
+
+    heads.push({
+      id: readXmlAttribute(attributes, "id") ?? `${sheetNumber}-${heads.length + 1}`,
+      sheetNumber,
+      staff,
+      x,
+      y,
+      midi,
+      confidence
+    });
+  }
+
+  heads.sort(compareAudiverisHeads);
+
+  const notes: NoteEvent[] = [];
+  let onsetIndex = 0;
+  let previous: AudiverisHeadCandidate | undefined;
+
+  for (const head of heads) {
+    const sameOnset =
+      previous &&
+      head.sheetNumber === previous.sheetNumber &&
+      head.staff === previous.staff &&
+      Math.abs(head.x - previous.x) <= 8 &&
+      Math.abs(head.y - previous.y) <= 48;
+
+    if (!sameOnset) {
+      onsetIndex += 1;
+    }
+
+    const zeroBased = Math.max(0, onsetIndex - 1);
+    notes.push({
+      id: `omr-fallback-${startIndex + notes.length}-${head.id}`,
+      measure: Math.floor(zeroBased / 4) + 1,
+      beat: (zeroBased % 4) + 1,
+      durationBeats: 1,
+      midi: head.midi,
+      source: "omr",
+      confidence: head.confidence
+    });
+
+    previous = head;
+  }
+
+  return notes;
+}
+
+function parseAudiverisClefs(sheetXml: string): Map<number, string> {
+  const clefs = new Map<number, string>();
+  const clefRegex = /<clef\b([^>]*)>/gi;
+  let clefMatch: RegExpExecArray | null;
+
+  while ((clefMatch = clefRegex.exec(sheetXml))) {
+    const attributes = clefMatch[1];
+    const staff = readIntegerAttribute(attributes, "staff") ?? 1;
+    const kind = readXmlAttribute(attributes, "kind") ?? "TREBLE";
+    if (!clefs.has(staff)) {
+      clefs.set(staff, kind.toUpperCase());
+    }
+  }
+
+  return clefs;
+}
+
+function parseAudiverisKeyFifths(sheetXml: string): number {
+  const attributeValue = /<key\b[^>]*fifths="([^"]+)"/i.exec(sheetXml)?.[1];
+  const elementValue = /<fifths>(-?\d+)<\/fifths>/i.exec(sheetXml)?.[1];
+  const parsed = Number.parseInt(attributeValue ?? elementValue ?? "0", 10);
+  return Number.isFinite(parsed) ? Math.max(-7, Math.min(7, parsed)) : 0;
+}
+
+function compareAudiverisHeads(a: AudiverisHeadCandidate, b: AudiverisHeadCandidate): number {
+  const rowA = Math.round(a.y / 32);
+  const rowB = Math.round(b.y / 32);
+  return a.sheetNumber - b.sheetNumber || rowA - rowB || a.x - b.x || a.staff - b.staff || a.y - b.y;
+}
+
+function audiverisPitchToMidi(pitch: number, clefKind: string, keyFifths: number): number {
+  const normalizedClef = clefKind.toUpperCase();
+  const base =
+    normalizedClef.includes("BASS") || normalizedClef.includes("F_CLEF")
+      ? { letter: "D", octave: 3 }
+      : normalizedClef.includes("ALTO") || normalizedClef.includes("C_CLEF")
+        ? { letter: "C", octave: 4 }
+        : { letter: "B", octave: 4 };
+  const diatonicIndex = noteToDiatonicIndex(base.letter, base.octave) - Math.round(pitch);
+  const note = diatonicIndexToNote(diatonicIndex);
+  return naturalNoteToMidi(note.letter, note.octave) + keySignatureAlter(note.letter, keyFifths);
+}
+
+function noteToDiatonicIndex(letter: string, octave: number): number {
+  const index = ["C", "D", "E", "F", "G", "A", "B"].indexOf(letter);
+  return octave * 7 + Math.max(0, index);
+}
+
+function diatonicIndexToNote(index: number): { letter: string; octave: number } {
+  const letters = ["C", "D", "E", "F", "G", "A", "B"];
+  const octave = Math.floor(index / 7);
+  const letterIndex = ((index % 7) + 7) % 7;
+  return { letter: letters[letterIndex], octave };
+}
+
+function naturalNoteToMidi(letter: string, octave: number): number {
+  const pitchClass: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  return 12 * (octave + 1) + pitchClass[letter];
+}
+
+function keySignatureAlter(letter: string, fifths: number): number {
+  const sharps = ["F", "C", "G", "D", "A", "E", "B"];
+  const flats = ["B", "E", "A", "D", "G", "C", "F"];
+  if (fifths > 0 && sharps.slice(0, fifths).includes(letter)) {
+    return 1;
+  }
+  if (fifths < 0 && flats.slice(0, Math.abs(fifths)).includes(letter)) {
+    return -1;
+  }
+  return 0;
+}
+
+function readXmlAttribute(attributes: string, name: string): string | undefined {
+  return new RegExp(`${name}="([^"]*)"`, "i").exec(attributes)?.[1];
+}
+
+function readNumberAttribute(attributes: string, name: string): number | undefined {
+  const value = readXmlAttribute(attributes, name);
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function readIntegerAttribute(attributes: string, name: string): number | undefined {
+  const value = readXmlAttribute(attributes, name);
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 async function prepareAudiverisInput(sourcePath: string, workDir: string): Promise<string> {
