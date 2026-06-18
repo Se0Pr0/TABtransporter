@@ -146,7 +146,23 @@ function registerIpcHandlers(): void {
         });
         await writeFile(result.filePath, data);
       } else {
-        const image = await exportWindow.webContents.capturePage();
+        const pageSize = (await exportWindow.webContents.executeJavaScript(`
+          new Promise((resolve) => {
+            requestAnimationFrame(() => {
+              const body = document.body;
+              const html = document.documentElement;
+              resolve({
+                width: Math.ceil(Math.max(body.scrollWidth, html.scrollWidth, body.offsetWidth, html.offsetWidth)),
+                height: Math.ceil(Math.max(body.scrollHeight, html.scrollHeight, body.offsetHeight, html.offsetHeight))
+              });
+            });
+          })
+        `)) as { width: number; height: number };
+        const width = Math.max(800, Math.min(2400, pageSize.width || 1200));
+        const height = Math.max(800, Math.min(12000, pageSize.height || 1600));
+        exportWindow.setContentSize(width, height);
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const image = await exportWindow.webContents.capturePage({ x: 0, y: 0, width, height });
         await writeFile(result.filePath, image.toPNG());
       }
 

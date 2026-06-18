@@ -5,7 +5,7 @@ import { buildExportHtml } from "./exportDocument";
 import type { ScoreModel } from "./types";
 
 describe("export document", () => {
-  it("변환된 악보와 TAB 운지 결과만 담은 HTML을 만든다", () => {
+  it("builds a re-engraved score and TAB document for export", () => {
     const options = {
       semitones: 2,
       capo: 0,
@@ -26,9 +26,12 @@ describe("export document", () => {
     expect(html).toContain("반음 +2");
     expect(html).toContain("일반 악보");
     expect(html).toContain("TAB");
+    expect(html).toContain("note-head");
+    expect(html).toContain("tab-fret");
     expect(html).toContain("추천 운지");
     expect(html).toContain("번줄");
     expect(html).not.toContain("PDF/이미지 열기");
+    expect(html).not.toContain("<table");
   });
 });
 

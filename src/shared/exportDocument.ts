@@ -1,4 +1,4 @@
-import type { FingeringWarning, ScoreModel, TransposeOptions } from "./types";
+import type { FingeringWarning, NoteEvent, ScoreModel, TransposeOptions } from "./types";
 import { getInstrumentPreset } from "./instruments";
 import { midiToNoteName } from "./pitch";
 
@@ -12,82 +12,37 @@ export interface ExportDocumentOptions {
 
 export function buildExportHtml(options: ExportDocumentOptions): string {
   const { score, sourceName, instrumentName, transposeOptions, warnings } = options;
-  const rows = score.tracks
-    .flatMap((track) =>
-      track.notes.map((note) => {
-        const tab = note.tab ? `${note.tab.stringNumber}번줄 ${note.tab.fret}프렛` : "운지 없음";
+  const systems = score.tracks.map((track) => {
+    const preset = getInstrumentPreset(track.instrumentPresetId);
+    const measures = groupByMeasure(track.notes);
+
+    return Array.from(measures.entries())
+      .map(([measure, notes]) => {
+        const strings = Array.from({ length: preset.stringCount }, (_, index) => index + 1);
+        const measureBeats = Math.max(4, ...notes.map((note) => note.beat + note.durationBeats - 1));
+        const sorted = [...notes].sort((a, b) => a.beat - b.beat || a.midi - b.midi);
+
         return `
-          <tr>
-            <td>${escapeHtml(String(note.measure))}</td>
-            <td>${escapeHtml(String(note.beat))}</td>
-            <td>${escapeHtml(midiToNoteName(note.midi))}</td>
-            <td>${escapeHtml(tab)}</td>
-          </tr>
+          <section class="score-system">
+            <div class="measure-number">${measure}</div>
+            <div class="notation-row">
+              <span>일반 악보</span>
+              <div class="staff-lines">
+                ${sorted.map((note) => renderStaffNote(note, measureBeats)).join("")}
+              </div>
+            </div>
+            <div class="notation-row">
+              <span>TAB</span>
+              <div class="tab-lines">
+                ${strings.map((stringNumber, index) => renderTabLine(stringNumber, index, strings.length)).join("")}
+                ${sorted.map((note) => renderTabNote(note, measureBeats, strings.length)).join("")}
+              </div>
+            </div>
+          </section>
         `;
       })
-    )
-    .join("");
-
-  const scoreSystems = score.tracks
-    .map((track) => {
-      const preset = getInstrumentPreset(track.instrumentPresetId);
-      const measures = new Map<number, typeof track.notes>();
-      for (const note of track.notes) {
-        const notes = measures.get(note.measure) ?? [];
-        notes.push(note);
-        measures.set(note.measure, notes);
-      }
-
-      return Array.from(measures.entries())
-        .map(
-          ([measure, notes]) => {
-            const strings = Array.from({ length: preset.stringCount }, (_, index) => index + 1);
-            const measureBeats = Math.max(4, ...notes.map((note) => note.beat + note.durationBeats - 1));
-            return `
-            <section class="score-system">
-              <h3>${measure}마디</h3>
-              <div class="notation-row">
-                <span>일반 악보</span>
-                <div class="staff-lines">
-                  ${notes
-                    .map(
-                      (note, index) => `
-                        <b class="note-head" style="left:${xForBeat(note.beat, measureBeats)};top:${staffTopFor(note.midi)};z-index:${index + 1}">
-                          ${escapeHtml(midiToNoteName(note.midi))}
-                        </b>
-                      `
-                    )
-                    .join("")}
-                </div>
-              </div>
-              <div class="notation-row">
-                <span>TAB</span>
-                <div class="tab-lines">
-                  ${strings
-                    .map(
-                      (stringNumber, index) => `
-                        <i class="tab-line" data-string="${stringNumber}" style="top:${lineTopFor(index, strings.length)}"></i>
-                      `
-                    )
-                    .join("")}
-                  ${notes
-                    .map(
-                      (note, index) => `
-                        <b class="tab-fret" style="left:${xForBeat(note.beat, measureBeats)};top:${tabTopFor(note.tab?.stringNumber, strings.length)};z-index:${index + 1}">
-                          ${escapeHtml(note.tab ? String(note.tab.fret) : "?")}
-                        </b>
-                      `
-                    )
-                    .join("")}
-                </div>
-              </div>
-            </section>
-          `;
-          }
-        )
-        .join("");
-    })
-    .join("");
+      .join("");
+  });
 
   return `<!doctype html>
 <html lang="ko">
@@ -95,126 +50,154 @@ export function buildExportHtml(options: ExportDocumentOptions): string {
     <meta charset="UTF-8" />
     <title>${escapeHtml(score.title)} 변환 결과</title>
     <style>
+      @page {
+        size: A4;
+        margin: 14mm;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
       body {
         margin: 0;
-        padding: 32px;
-        color: #24211d;
-        background: #fffdf8;
+        color: #211f1c;
+        background: #ffffff;
         font-family: "Segoe UI", "Malgun Gothic", Arial, sans-serif;
       }
+
       header {
-        border-bottom: 2px solid #2f5f6d;
-        padding-bottom: 16px;
-        margin-bottom: 22px;
-      }
-      h1 {
-        margin: 0 0 10px;
-        font-size: 28px;
-      }
-      .meta {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px 18px;
-        color: #5d574f;
-        font-size: 13px;
+        grid-template-columns: 1fr auto;
+        gap: 16px;
+        align-items: end;
+        border-bottom: 1.5px solid #211f1c;
+        padding-bottom: 12px;
+        margin-bottom: 18px;
       }
+
+      h1 {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 34px;
+        font-weight: 500;
+      }
+
+      .meta {
+        color: #55504a;
+        font-size: 12px;
+        line-height: 1.45;
+        text-align: right;
+      }
+
       .score-system {
+        position: relative;
         break-inside: avoid;
-        border: 1px solid #d8d1c6;
-        border-radius: 8px;
-        padding: 14px;
+        padding: 10px 0 14px 36px;
         margin: 0 0 14px;
       }
-      .score-system h3 {
-        margin: 0 0 10px;
-        font-size: 15px;
-        color: #2f5f6d;
+
+      .measure-number {
+        position: absolute;
+        left: 0;
+        top: 10px;
+        color: #5f5850;
+        font-size: 12px;
       }
+
       .notation-row {
         display: grid;
-        grid-template-columns: 72px 1fr;
+        grid-template-columns: 78px minmax(0, 1fr);
         gap: 10px;
         align-items: center;
-        margin-top: 8px;
+        margin: 7px 0;
       }
+
       .notation-row > span {
-        color: #5d574f;
+        color: #332f2a;
         font-size: 12px;
         font-weight: 700;
       }
+
       .staff-lines,
       .tab-lines {
         position: relative;
         min-height: 92px;
-        border-left: 2px solid #4b453e;
-        border-right: 2px solid #4b453e;
+        border-left: 2px solid #1f1d1a;
+        border-right: 2px solid #1f1d1a;
         background:
-          linear-gradient(#4b453e, #4b453e) 0 20% / 100% 1px no-repeat,
-          linear-gradient(#4b453e, #4b453e) 0 35% / 100% 1px no-repeat,
-          linear-gradient(#4b453e, #4b453e) 0 50% / 100% 1px no-repeat,
-          linear-gradient(#4b453e, #4b453e) 0 65% / 100% 1px no-repeat,
-          linear-gradient(#4b453e, #4b453e) 0 80% / 100% 1px no-repeat;
+          linear-gradient(#1f1d1a, #1f1d1a) 0 20% / 100% 1px no-repeat,
+          linear-gradient(#1f1d1a, #1f1d1a) 0 35% / 100% 1px no-repeat,
+          linear-gradient(#1f1d1a, #1f1d1a) 0 50% / 100% 1px no-repeat,
+          linear-gradient(#1f1d1a, #1f1d1a) 0 65% / 100% 1px no-repeat,
+          linear-gradient(#1f1d1a, #1f1d1a) 0 80% / 100% 1px no-repeat;
       }
+
       .tab-lines {
         min-height: 112px;
         background: transparent;
       }
-      .note-head,
-      .tab-fret {
-        position: absolute;
-        transform: translate(-50%, -50%);
-        display: inline-grid;
-        place-items: center;
-        min-width: 32px;
-        min-height: 22px;
-        padding: 0 5px;
-        border-radius: 999px;
-        background: #fffdf9;
-        border: 1px solid #4b453e;
-        color: #2f2d2a;
-        font-size: 12px;
-        font-style: normal;
-      }
+
       .tab-line {
         position: absolute;
         left: 0;
         right: 0;
         height: 1px;
-        background: #5c554d;
-        font-style: normal;
+        background: #1f1d1a;
       }
+
       .tab-line::before {
         content: attr(data-string);
         position: absolute;
         left: -18px;
         top: -7px;
-        color: #746e64;
+        color: #5f5850;
         font-size: 11px;
       }
+
+      .note-head {
+        position: absolute;
+        transform: translate(-50%, -50%) rotate(-18deg);
+        width: 15px;
+        height: 11px;
+        border-radius: 50%;
+        background: #1f1d1a;
+      }
+
+      .note-head::after {
+        content: "";
+        position: absolute;
+        right: -2px;
+        bottom: 5px;
+        width: 1.5px;
+        height: 34px;
+        background: #1f1d1a;
+        transform: rotate(18deg);
+        transform-origin: bottom center;
+      }
+
       .tab-fret {
-        min-width: 24px;
-        min-height: 20px;
-        border-color: #2f5f6d;
-        color: #244955;
+        position: absolute;
+        transform: translate(-50%, -50%);
+        min-width: 22px;
+        min-height: 18px;
+        display: inline-grid;
+        place-items: center;
+        padding: 0 4px;
+        background: #ffffff;
+        color: #211f1c;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1;
       }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        margin-top: 22px;
-        font-size: 13px;
-      }
-      th,
-      td {
-        border: 1px solid #ded6cb;
-        padding: 8px;
-        text-align: left;
-      }
-      th {
-        background: #eee7dd;
-      }
+
       .warnings {
+        break-inside: avoid;
         margin-top: 18px;
-        color: #8a4a1b;
+        padding: 10px 12px;
+        border-top: 1px solid #c9c1b6;
+        color: #704018;
+        font-size: 12px;
       }
     </style>
   </head>
@@ -229,18 +212,7 @@ export function buildExportHtml(options: ExportDocumentOptions): string {
       </div>
     </header>
     <main>
-      ${scoreSystems || '<p class="warnings">변환된 음표가 없습니다.</p>'}
-      <table>
-        <thead>
-          <tr>
-            <th>마디</th>
-            <th>박</th>
-            <th>음</th>
-            <th>추천 운지</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
+      ${systems.join("") || '<p class="warnings">변환된 음표가 없습니다.</p>'}
       ${
         warnings.length
           ? `<section class="warnings"><strong>확인 필요</strong><ul>${warnings
@@ -251,6 +223,34 @@ export function buildExportHtml(options: ExportDocumentOptions): string {
     </main>
   </body>
 </html>`;
+}
+
+function groupByMeasure(notes: NoteEvent[]): Map<number, NoteEvent[]> {
+  const measures = new Map<number, NoteEvent[]>();
+  for (const note of notes) {
+    const items = measures.get(note.measure) ?? [];
+    items.push(note);
+    measures.set(note.measure, items);
+  }
+  return measures;
+}
+
+function renderStaffNote(note: NoteEvent, measureBeats: number): string {
+  return `<i class="note-head" style="left:${xForBeat(note.beat, measureBeats)};top:${staffTopFor(
+    note.midi
+  )}" title="${escapeHtml(midiToNoteName(note.midi))}"></i>`;
+}
+
+function renderTabLine(stringNumber: number, index: number, total: number): string {
+  return `<i class="tab-line" data-string="${stringNumber}" style="top:${lineTopFor(index, total)}"></i>`;
+}
+
+function renderTabNote(note: NoteEvent, measureBeats: number, stringCount: number): string {
+  const title = note.tab ? `추천 운지: ${note.tab.stringNumber}번줄 ${note.tab.fret}프렛` : "추천 운지 없음";
+  return `<b class="tab-fret" style="left:${xForBeat(note.beat, measureBeats)};top:${tabTopFor(
+    note.tab?.stringNumber,
+    stringCount
+  )}" title="${escapeHtml(title)}">${escapeHtml(note.tab ? String(note.tab.fret) : "?")}</b>`;
 }
 
 function formatSemitones(semitones: number): string {

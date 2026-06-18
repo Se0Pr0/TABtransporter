@@ -17,6 +17,7 @@ import { getInstrumentPreset, INSTRUMENT_PRESETS } from "../../shared/instrument
 import { transposeAndRemap } from "../../shared/fingering";
 import { midiToNoteName } from "../../shared/pitch";
 import { createEmptyScore } from "../../shared/score";
+import { buildExportHtml } from "../../shared/exportDocument";
 import type {
   AudiverisStatus,
   ConversionResult,
@@ -212,7 +213,24 @@ export function App() {
     setStatus("변환이 끝났습니다. 변환된 일반 음표와 TAB 운지를 확인한 뒤 재생하거나 저장하세요.");
   }
 
-  async function exportResult(_format: "pdf" | "png") {
+  async function exportResult(format: "pdf" | "png") {
+    if (convertedScore && convertedMeta) {
+      const html = buildExportHtml({
+        score: convertedScore,
+        sourceName: convertedMeta.sourceName,
+        instrumentName: convertedMeta.instrumentName,
+        transposeOptions: convertedMeta.options,
+        warnings
+      });
+      setStatus(`${format.toUpperCase()} 파일로 변환된 악보를 저장하고 있습니다.`);
+      const result = await window.tabTransporter.exportCurrentView({
+        format,
+        defaultFileName: `${convertedScore.title}.${format}`,
+        html
+      });
+      setStatus(result.message);
+      return;
+    }
     if (!convertedScore || !convertedMeta) {
       setStatus("먼저 변환하기를 눌러 변환된 악보를 만들어야 저장할 수 있습니다.");
       return;
@@ -320,11 +338,7 @@ export function App() {
               <small>변환하기를 누른 뒤 저장됩니다</small>
             </div>
             {convertedScore ? (
-              hasOriginalLayout(convertedScore) && openedFile ? (
-                <LayoutPreview file={openedFile} score={convertedScore} activeNoteId={playback.activeNoteId} />
-              ) : (
-                <TabPreview score={convertedScore} activeNoteId={playback.activeNoteId} />
-              )
+              <TabPreview score={convertedScore} activeNoteId={playback.activeNoteId} />
             ) : (
               <PendingResult />
             )}
