@@ -2,13 +2,14 @@ import { copyFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { spawn } from "node:child_process";
-import type { ConversionResult, OmrProgress } from "../shared/types";
+import type { ConversionResult, OmrProgress, ScoreLayoutPage } from "../shared/types";
 import { noteNameToMidi } from "../shared/pitch";
 import type { NoteEvent, ScoreModel, SourceBounds } from "../shared/types";
 import { resolveAudiverisPath } from "./audiveris";
 import { appendLogFile, createRunLogFile, readLogTail, tailLines, writeAppLog } from "./logger";
 
 const AUDIVERIS_TIMEOUT_MS = 180_000;
+const PDF_RENDER_DPI = 220;
 const AUDIVERIS_STEPS = [
   "LOAD",
   "BINARY",
@@ -250,6 +251,7 @@ export async function convertWithLocalOmr(sourcePath: string, onProgress?: Progr
     progress(94, "parsing", "음표 데이터를 앱 내부 악보 모델로 바꾸고 있습니다.");
     const score = parseMusicXmlToScore(musicXml, basename(sourcePath));
     await attachAudiverisLayoutFromOmr(workDir, score, diagnostics);
+    await attachPdfLayoutPagesIfPossible(audiverisInputPath, workDir, score, diagnostics);
 
     if (!score.tracks.some((track) => track.notes.length > 0)) {
       progress(100, "failed", "MusicXML은 생성됐지만 인식된 음표가 없습니다.", output);
@@ -322,6 +324,9 @@ async function trySegmentedPdfOmr(
   }
 
   const segmentedDir = await mkdtemp(join(workDir, "segmented-"));
+  const pageWidthPx = pdfPageWidthPx(pdfInfo);
+  const pageHeightPx = pdfPageHeightPx(pdfInfo);
+  const layoutPages = await buildPdfLayoutPages(pdfPath, pdfInfo, segmentedDir, diagnostics);
   const scoreParts: ScoreModel[] = [];
   const logExcerpt: string[] = [];
   diagnostics.push(`페이지별 재분석 시작: ${pdfInfo.pages}페이지`);
@@ -329,22 +334,28 @@ async function trySegmentedPdfOmr(
   for (let page = 1; page <= pdfInfo.pages; page += 1) {
     progress(86 + Math.min(8, page), "omr", `${page}페이지를 개별 분석하고 있습니다.`);
     const pageDir = await mkdtemp(join(segmentedDir, `page-${page}-`));
-    const pageRun = await runAudiveris(audiverisPath, pdfPath, pageDir, originalSourcePath, progress, {
-      beforeOutputArgs: ["-sheets", String(page)],
-      label: `page-${page}`
-    });
-    const pageOutput = pageRun.exitCode === 0 ? await findMusicXml(pageDir) : undefined;
+    let pageRun: AudiverisRunResult | undefined;
+    try {
+      const pageInputPath = await renderPdfPageImage(pdfPath, page, PDF_RENDER_DPI, pageDir, `page-${page}-source`);
+      pageRun = await runAudiveris(audiverisPath, pageInputPath, pageDir, originalSourcePath, progress, {
+        label: `page-${page}`
+      });
+      const pageOutput = pageRun.exitCode === 0 ? await findMusicXml(pageDir) : undefined;
 
-    if (pageOutput) {
-      const musicXml = await readMusicXmlExport(pageOutput, pageDir);
-      const pageScore = parseMusicXmlToScore(musicXml, `${basename(originalSourcePath)} ${page}페이지`);
-      await attachAudiverisLayoutFromOmr(pageDir, pageScore, diagnostics);
-      if (pageScore.tracks.some((track) => track.notes.length > 0)) {
-        scoreParts.push(pageScore);
-        diagnostics.push(`${page}페이지 개별 MusicXML 변환 성공`);
-        logExcerpt.push(...extractImportantAudiverisLines(`${pageRun.stdout}\n${pageRun.stderr}`));
-        continue;
+      if (pageOutput) {
+        const musicXml = await readMusicXmlExport(pageOutput, pageDir);
+        const pageScore = parseMusicXmlToScore(musicXml, `${basename(originalSourcePath)} ${page}페이지`);
+        await attachAudiverisLayoutFromOmr(pageDir, pageScore, diagnostics);
+        remapSourceBounds(pageScore, page, pageWidthPx, pageHeightPx);
+        if (pageScore.tracks.some((track) => track.notes.length > 0)) {
+          scoreParts.push(pageScore);
+          diagnostics.push(`${page}페이지 개별 MusicXML 변환 성공`);
+          logExcerpt.push(...extractImportantAudiverisLines(`${pageRun.stdout}\n${pageRun.stderr}`));
+          continue;
+        }
       }
+    } catch (error) {
+      diagnostics.push(`${page}페이지 개별 이미지 변환 실패: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     diagnostics.push(`${page}페이지 개별 변환 실패. 시스템 밴드 단위로 재분석합니다.`);
@@ -355,10 +366,12 @@ async function trySegmentedPdfOmr(
     }
 
     diagnostics.push(`${page}페이지는 밴드 단위 재분석도 실패했습니다.`);
-    logExcerpt.push(...extractImportantAudiverisLines(`${pageRun.stdout}\n${pageRun.stderr}`));
+    if (pageRun) {
+      logExcerpt.push(...extractImportantAudiverisLines(`${pageRun.stdout}\n${pageRun.stderr}`));
+    }
   }
 
-  const score = mergeScoreParts(scoreParts, basename(originalSourcePath));
+  const score = mergeScoreParts(scoreParts, basename(originalSourcePath), layoutPages);
   const noteCount = score.tracks.reduce((sum, track) => sum + track.notes.length, 0);
   if (noteCount === 0) {
     diagnostics.push("페이지/구간별 재분석에서 사용할 수 있는 음표를 얻지 못했습니다.");
@@ -387,7 +400,7 @@ async function convertPdfPageByBands(
   progress: ProgressReporter,
   diagnostics: string[]
 ): Promise<ScoreModel[]> {
-  const dpi = 220;
+  const dpi = PDF_RENDER_DPI;
   const widthPx = Math.ceil((pdfInfo.widthPt / 72) * dpi);
   const heightPx = Math.ceil((pdfInfo.heightPt / 72) * dpi);
   const bandCount = Math.max(1, Math.ceil(heightPx / 430));
@@ -421,6 +434,7 @@ async function convertPdfPageByBands(
     const musicXml = await readMusicXmlExport(output, bandDir);
     const score = parseMusicXmlToScore(musicXml, `${basename(originalSourcePath)} ${page}페이지 ${band + 1}구간`);
     await attachAudiverisLayoutFromOmr(bandDir, score, diagnostics);
+    remapSourceBounds(score, page, widthPx, heightPx, top);
     if (!score.tracks.some((track) => track.notes.length > 0)) {
       diagnostics.push(`${page}페이지 ${band + 1}구간은 음표가 없어 제외`);
       continue;
@@ -430,6 +444,104 @@ async function convertPdfPageByBands(
   }
 
   return scores;
+}
+
+async function attachPdfLayoutPagesIfPossible(
+  pdfPath: string,
+  workDir: string,
+  score: ScoreModel,
+  diagnostics: string[]
+): Promise<void> {
+  if (extname(pdfPath).toLowerCase() !== ".pdf") {
+    return;
+  }
+
+  try {
+    const pdfInfo = await readPdfInfo(pdfPath);
+    const layoutPages = await buildPdfLayoutPages(pdfPath, pdfInfo, workDir, diagnostics);
+    if (!layoutPages.length) {
+      return;
+    }
+    score.layoutPages = layoutPages;
+    fillSourcePageDimensions(score, layoutPages);
+  } catch (error) {
+    diagnostics.push(`원본 PDF 페이지 미리보기 생성 실패: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function buildPdfLayoutPages(
+  pdfPath: string,
+  pdfInfo: PdfInfo,
+  outputDir: string,
+  diagnostics: string[]
+): Promise<ScoreLayoutPage[]> {
+  const pageDir = await mkdtemp(join(outputDir, "layout-pages-"));
+  const width = pdfPageWidthPx(pdfInfo);
+  const height = pdfPageHeightPx(pdfInfo);
+  const pages: ScoreLayoutPage[] = [];
+
+  for (let page = 1; page <= pdfInfo.pages; page += 1) {
+    try {
+      const imagePath = await renderPdfPageImage(pdfPath, page, PDF_RENDER_DPI, pageDir, `layout-page-${page}`);
+      const image = await readFile(imagePath);
+      pages.push({
+        page,
+        width,
+        height,
+        dataUrl: `data:image/png;base64,${image.toString("base64")}`
+      });
+    } catch (error) {
+      diagnostics.push(`${page}페이지 원본 이미지 렌더링 실패: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  if (pages.length) {
+    diagnostics.push(`원본 PDF 페이지 이미지 연결: ${pages.length}/${pdfInfo.pages}페이지`);
+  }
+
+  return pages;
+}
+
+function remapSourceBounds(score: ScoreModel, page: number, pageWidth: number, pageHeight: number, offsetY = 0): void {
+  for (const note of score.tracks.flatMap((track) => track.notes)) {
+    if (!note.originalSource) {
+      continue;
+    }
+
+    note.originalSource = {
+      ...note.originalSource,
+      page,
+      pageWidth,
+      pageHeight,
+      y: note.originalSource.y + offsetY
+    };
+  }
+}
+
+function fillSourcePageDimensions(score: ScoreModel, pages: ScoreLayoutPage[]): void {
+  const pageMap = new Map(pages.map((page) => [page.page, page]));
+  for (const note of score.tracks.flatMap((track) => track.notes)) {
+    if (!note.originalSource) {
+      continue;
+    }
+    const page = pageMap.get(note.originalSource.page);
+    if (!page) {
+      continue;
+    }
+    note.originalSource = {
+      ...note.originalSource,
+      pageWidth: page.width,
+      pageHeight: page.height
+    };
+  }
+}
+
+function pdfPageWidthPx(pdfInfo: PdfInfo): number {
+  return Math.ceil((pdfInfo.widthPt / 72) * PDF_RENDER_DPI);
+}
+
+function pdfPageHeightPx(pdfInfo: PdfInfo): number {
+  return Math.ceil((pdfInfo.heightPt / 72) * PDF_RENDER_DPI);
 }
 
 function readPdfInfo(pdfPath: string): Promise<PdfInfo> {
@@ -458,6 +570,39 @@ function readPdfInfo(pdfPath: string): Promise<PdfInfo> {
         return;
       }
       resolve({ pages, widthPt, heightPt });
+    });
+  });
+}
+
+function renderPdfPageImage(
+  pdfPath: string,
+  page: number,
+  dpi: number,
+  outputDir: string,
+  label: string
+): Promise<string> {
+  const prefix = join(outputDir, label);
+  const args = ["-f", String(page), "-l", String(page), "-png", "-r", String(dpi), pdfPath, prefix];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn("pdftoppm", args, { windowsHide: true });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", async (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `pdftoppm exited with code ${code}`));
+        return;
+      }
+      const files = await readdir(outputDir, { withFileTypes: true });
+      const image = files.find((entry) => entry.isFile() && entry.name.startsWith(label) && entry.name.endsWith(".png"));
+      if (!image) {
+        reject(new Error("pdftoppm did not create a PNG page"));
+        return;
+      }
+      resolve(join(outputDir, image.name));
     });
   });
 }
@@ -516,7 +661,7 @@ function renderPdfPageBand(
   });
 }
 
-function mergeScoreParts(parts: ScoreModel[], title: string): ScoreModel {
+function mergeScoreParts(parts: ScoreModel[], title: string, layoutPages?: ScoreLayoutPage[]): ScoreModel {
   const notes: NoteEvent[] = [];
   let measureOffset = 0;
   let noteIndex = 1;
@@ -545,6 +690,7 @@ function mergeScoreParts(parts: ScoreModel[], title: string): ScoreModel {
     title,
     tempo: parts.find((part) => part.tempo)?.tempo ?? 92,
     timeSignature: parts.find((part) => part.timeSignature)?.timeSignature ?? [4, 4],
+    layoutPages: layoutPages?.map((page) => ({ ...page })),
     tracks: [
       {
         id: "segmented-omr-track-1",

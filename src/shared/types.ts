@@ -28,11 +28,20 @@ export interface TabPosition {
 
 export interface SourceBounds {
   page: number;
+  pageWidth?: number;
+  pageHeight?: number;
   x: number;
   y: number;
   width: number;
   height: number;
   staff?: number;
+}
+
+export interface ScoreLayoutPage {
+  page: number;
+  width: number;
+  height: number;
+  dataUrl?: string;
 }
 
 export interface NoteEvent {
@@ -60,6 +69,7 @@ export interface ScoreModel {
   title: string;
   tempo: number;
   timeSignature: [number, number];
+  layoutPages?: ScoreLayoutPage[];
   tracks: ScoreTrack[];
 }
 

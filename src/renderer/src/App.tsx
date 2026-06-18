@@ -520,8 +520,49 @@ function LayoutPreview({
   score: ScoreModel;
   activeNoteId?: string;
 }) {
-  const notes = score.tracks.flatMap((track) => track.notes).filter((note) => note.originalSource?.page === 1);
+  const notes = score.tracks.flatMap((track) => track.notes).filter((note) => note.originalSource);
+  const layoutPages = score.layoutPages?.filter((page) => page.width > 0 && page.height > 0) ?? [];
   if (!notes.length) {
+    return <TabPreview score={score} activeNoteId={activeNoteId} />;
+  }
+
+  if (layoutPages.length) {
+    return (
+      <div className="layout-preview" aria-label="원본 위치 기준 변환 미리보기">
+        {layoutPages.map((page) => {
+          const pageNotes = notes.filter((note) => note.originalSource?.page === page.page);
+          return (
+            <div className="layout-page" key={page.page} style={{ aspectRatio: `${page.width} / ${page.height}` }}>
+              {page.dataUrl && <img className="layout-page-source" src={page.dataUrl} alt={`${page.page}페이지 원본 악보`} />}
+              <div className="layout-overlay">
+                {pageNotes.map((note) => {
+                  const source = note.originalSource!;
+                  const sourceWidth = source.pageWidth ?? page.width;
+                  const sourceHeight = source.pageHeight ?? page.height;
+                  return (
+                    <span
+                      className={`layout-mark ${activeNoteId === note.id ? "active" : ""}`}
+                      key={note.id}
+                      style={{
+                        left: `${((source.x + source.width / 2) / sourceWidth) * 100}%`,
+                        top: `${((source.y + source.height / 2) / sourceHeight) * 100}%`
+                      }}
+                      title={`${midiToNoteName(note.midi)}${note.tab ? ` / ${note.tab.stringNumber}번줄 ${note.tab.fret}프렛` : ""}`}
+                    >
+                      <b>{midiToNoteName(note.midi)}</b>
+                      {note.tab && <small>{note.tab.fret}</small>}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  if (file.kind === "pdf") {
     return <TabPreview score={score} activeNoteId={activeNoteId} />;
   }
 
@@ -530,12 +571,8 @@ function LayoutPreview({
 
   return (
     <div className="layout-preview" aria-label="원본 위치 기준 변환 미리보기">
-      <div className="layout-stage">
-        {file.kind === "pdf" ? (
-          <object className="layout-source" data={file.dataUrl} type="application/pdf" aria-label="원본 PDF" />
-        ) : (
-          <img className="layout-source" src={file.dataUrl} alt="원본 악보" />
-        )}
+      <div className="layout-page" style={{ aspectRatio: `${maxX} / ${maxY}` }}>
+        <img className="layout-page-source" src={file.dataUrl} alt="원본 악보" />
         <div className="layout-overlay">
           {notes.map((note) => {
             const source = note.originalSource!;
@@ -544,8 +581,8 @@ function LayoutPreview({
                 className={`layout-mark ${activeNoteId === note.id ? "active" : ""}`}
                 key={note.id}
                 style={{
-                  left: `${(source.x / maxX) * 100}%`,
-                  top: `${(source.y / maxY) * 100}%`
+                  left: `${((source.x + source.width / 2) / maxX) * 100}%`,
+                  top: `${((source.y + source.height / 2) / maxY) * 100}%`
                 }}
                 title={`${midiToNoteName(note.midi)}${note.tab ? ` / ${note.tab.stringNumber}번줄 ${note.tab.fret}프렛` : ""}`}
               >

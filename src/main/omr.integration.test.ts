@@ -21,6 +21,8 @@ runIfSampleExists("Audiveris OMR integration", () => {
         expect(result.musicXmlPath).toBeTruthy();
         expect(result.score?.tracks[0].notes.length).toBeGreaterThan(0);
         expect(result.score?.tracks[0].notes.some((note) => note.originalSource)).toBe(true);
+        expect(result.score?.layoutPages?.length).toBeGreaterThan(0);
+        expect(result.score?.tracks[0].notes.some((note) => note.originalSource?.pageWidth && note.originalSource?.pageHeight)).toBe(true);
         expect(result.diagnostics.some((item) => item.includes("원본 레이아웃 좌표 연결"))).toBe(true);
         return;
       }

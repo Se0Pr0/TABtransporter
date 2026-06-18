@@ -20,6 +20,7 @@ export function createEmptyScore(): ScoreModel {
 export function cloneScore(score: ScoreModel): ScoreModel {
   return {
     ...score,
+    layoutPages: score.layoutPages?.map((page) => ({ ...page })),
     tracks: score.tracks.map((track) => ({
       ...track,
       notes: track.notes.map((note) => ({

@@ -64,6 +64,16 @@ describe("transpose and remap", () => {
     });
   });
 
+  it("preserves layout pages after transpose", () => {
+    const result = transposeAndRemap(createTestScore(), {
+      semitones: 2,
+      capo: 0,
+      instrumentPresetId: GUITAR_STANDARD_6.id
+    });
+
+    expect(result.score.layoutPages).toEqual([{ page: 1, width: 1819, height: 2573, dataUrl: "data:image/png;base64,test" }]);
+  });
+
   it("avoids assigning the same string to simultaneous notes", () => {
     const result = transposeAndRemap(createChordScore(), {
       semitones: 0,
@@ -83,6 +93,7 @@ function createTestScore(): ScoreModel {
     title: "테스트 악보",
     tempo: 92,
     timeSignature: [4, 4],
+    layoutPages: [{ page: 1, width: 1819, height: 2573, dataUrl: "data:image/png;base64,test" }],
     tracks: [
       {
         id: "track-1",
