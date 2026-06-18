@@ -1,11 +1,11 @@
-import { existsSync } from "node:fs";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import type { ConversionResult } from "../shared/types";
 import { noteNameToMidi } from "../shared/pitch";
 import type { NoteEvent, ScoreModel } from "../shared/types";
+import { resolveAudiverisPath } from "./audiveris";
 
 const AUDIVERIS_TIMEOUT_MS = 180_000;
 
@@ -43,7 +43,7 @@ export async function convertWithLocalOmr(sourcePath: string): Promise<Conversio
       };
     }
 
-    const musicXml = await readFile(output, "utf8");
+    const musicXml = await readMusicXmlExport(output, workDir);
     const score = parseMusicXmlToScore(musicXml, basename(sourcePath));
 
     if (!score.tracks.some((track) => track.notes.length > 0)) {
@@ -75,42 +75,6 @@ export async function convertWithLocalOmr(sourcePath: string): Promise<Conversio
       await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
-}
-
-function resolveAudiverisPath(): string | undefined {
-  const explicit = process.env.AUDIVERIS_BIN;
-  if (explicit && existsSync(explicit)) {
-    return explicit;
-  }
-
-  const pathExecutable = resolveFromPath("audiveris");
-  if (pathExecutable) {
-    return pathExecutable;
-  }
-
-  const candidates = [
-    "C:\\Program Files\\Audiveris\\bin\\Audiveris.bat",
-    "C:\\Program Files\\Audiveris\\Audiveris.exe",
-    "C:\\Program Files (x86)\\Audiveris\\bin\\Audiveris.bat",
-    "C:\\Program Files (x86)\\Audiveris\\Audiveris.exe"
-  ];
-
-  return candidates.find((candidate) => existsSync(candidate));
-}
-
-function resolveFromPath(command: string): string | undefined {
-  const result = spawnSync("where.exe", [command], {
-    windowsHide: true,
-    encoding: "utf8"
-  });
-  if (result.status !== 0) {
-    return undefined;
-  }
-
-  return result.stdout
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .find((item) => item.length > 0 && existsSync(item));
 }
 
 function runAudiveris(audiverisPath: string, sourcePath: string, outputDir: string): Promise<void> {
@@ -175,6 +139,73 @@ async function findMusicXml(directory: string): Promise<string | undefined> {
   }
 
   return mxlCandidate;
+}
+
+async function readMusicXmlExport(outputPath: string, workDir: string): Promise<string> {
+  const extension = extname(outputPath).toLowerCase();
+  if (extension !== ".mxl") {
+    return readFile(outputPath, "utf8");
+  }
+
+  const extractDir = await mkdtemp(join(workDir, "mxl-"));
+  const zipPath = join(extractDir, "score.zip");
+  await copyFile(outputPath, zipPath);
+  await expandZip(zipPath, extractDir);
+
+  const xmlPath = await findExtractedMusicXml(extractDir);
+  if (!xmlPath) {
+    throw new Error("Audiveris MXL 파일 안에서 MusicXML 본문을 찾지 못했습니다.");
+  }
+
+  return readFile(xmlPath, "utf8");
+}
+
+function expandZip(zipPath: string, extractDir: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("tar.exe", ["-xf", zipPath, "-C", extractDir], { windowsHide: true });
+
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(stderr.trim() || `MXL 압축 해제가 코드 ${code}로 실패했습니다.`));
+    });
+  });
+}
+
+async function findExtractedMusicXml(directory: string): Promise<string | undefined> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const candidates: string[] = [];
+
+  for (const entry of entries) {
+    const filePath = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name.toUpperCase() === "META-INF") {
+        continue;
+      }
+      const nested = await findExtractedMusicXml(filePath);
+      if (nested) {
+        candidates.push(nested);
+      }
+      continue;
+    }
+
+    if (!entry.isFile()) {
+      continue;
+    }
+    const extension = extname(entry.name).toLowerCase();
+    if (extension === ".xml" || extension === ".musicxml") {
+      candidates.push(filePath);
+    }
+  }
+
+  return candidates[0];
 }
 
 export function parseMusicXmlToScore(musicXml: string, title = "변환된 악보"): ScoreModel {

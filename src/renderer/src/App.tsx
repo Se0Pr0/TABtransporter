@@ -12,13 +12,20 @@ import {
   SlidersHorizontal,
   Wand2
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { getInstrumentPreset, INSTRUMENT_PRESETS } from "../../shared/instruments";
 import { transposeAndRemap } from "../../shared/fingering";
 import { midiToNoteName } from "../../shared/pitch";
 import { createEmptyScore } from "../../shared/score";
 import { buildExportHtml } from "../../shared/exportDocument";
-import type { ConversionResult, FingeringWarning, OpenedScoreFile, ScoreModel, TransposeOptions } from "../../shared/types";
+import type {
+  AudiverisStatus,
+  ConversionResult,
+  FingeringWarning,
+  OpenedScoreFile,
+  ScoreModel,
+  TransposeOptions
+} from "../../shared/types";
 import { usePlayback } from "./usePlayback";
 
 const KEY_OPTIONS = [
@@ -60,6 +67,8 @@ export function App() {
   const [sourceScore, setSourceScore] = useState<ScoreModel | undefined>();
   const [convertedScore, setConvertedScore] = useState<ScoreModel | undefined>();
   const [convertedMeta, setConvertedMeta] = useState<ConvertedMeta | undefined>();
+  const [audiveris, setAudiveris] = useState<AudiverisStatus | undefined>();
+  const [installingAudiveris, setInstallingAudiveris] = useState(false);
   const [instrumentId, setInstrumentId] = useState(INSTRUMENT_PRESETS[0].id);
   const [semitones, setSemitones] = useState(0);
   const [capo, setCapo] = useState(0);
@@ -69,6 +78,29 @@ export function App() {
   const playback = usePlayback(convertedScore ?? EMPTY_SCORE);
   const selectedInstrument = INSTRUMENT_PRESETS.find((preset) => preset.id === instrumentId) ?? INSTRUMENT_PRESETS[0];
   const hasSourceNotes = Boolean(sourceScore?.tracks.some((track) => track.notes.length > 0));
+
+  useEffect(() => {
+    void refreshAudiverisStatus();
+  }, []);
+
+  async function refreshAudiverisStatus() {
+    const next = await window.tabTransporter.getAudiverisStatus();
+    setAudiveris(next);
+  }
+
+  async function installAudiveris() {
+    setInstallingAudiveris(true);
+    setStatus("Audiveris 설치 파일을 공식 GitHub 릴리스에서 내려받고 있습니다.");
+    try {
+      const result = await window.tabTransporter.installAudiveris();
+      setAudiveris(result);
+      setStatus(result.message);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Audiveris 설치 중 알 수 없는 오류가 났습니다.");
+    } finally {
+      setInstallingAudiveris(false);
+    }
+  }
 
   async function openFile() {
     const file = await window.tabTransporter.openScoreFile();
@@ -86,6 +118,7 @@ export function App() {
 
     const result = await window.tabTransporter.convertScoreFile(file.path);
     setConversion(result);
+    await refreshAudiverisStatus();
     if (result.score && result.score.tracks.some((track) => track.notes.length > 0)) {
       setSourceScore(result.score);
       setStatus("악보 분석이 끝났습니다. 조옮김 옵션을 고르고 변환하기를 누르세요.");
@@ -174,6 +207,20 @@ export function App() {
               <dd>{conversion ? CONVERSION_STATUS_LABEL[conversion.status] : "시작 전"}</dd>
             </div>
           </dl>
+        </section>
+
+        <section className="panel">
+          <h2>OMR 변환기</h2>
+          <p className={audiveris?.installed ? "status-ok" : "status-warn"}>
+            {audiveris?.message ?? "Audiveris 상태 확인 중"}
+          </p>
+          {audiveris?.path && <p className="path-text">{audiveris.path}</p>}
+          {!audiveris?.installed && (
+            <button className="secondary-action" onClick={installAudiveris} disabled={installingAudiveris}>
+              <Download size={16} />
+              {installingAudiveris ? "설치 중" : "Audiveris 설치"}
+            </button>
+          )}
         </section>
 
         <section className="panel">

@@ -9,6 +9,7 @@
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
     "package:win": "npm run build && electron-builder --win nsis",
+    "setup:audiveris": "powershell -ExecutionPolicy Bypass -File scripts/setup-audiveris.ps1",
     "test": "vitest run --pool=threads",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
   },

@@ -461,3 +461,24 @@ button:disabled {
   font-size: 13px;
   margin: 0;
 }
+
+.status-ok,
+.status-warn,
+.path-text {
+  margin: 0;
+  font-size: 13px;
+}
+
+.status-ok {
+  color: #2f5f46;
+}
+
+.status-warn {
+  color: #8a4a1b;
+}
+
+.path-text {
+  margin-top: 8px;
+  color: #746e64;
+  overflow-wrap: anywhere;
+}

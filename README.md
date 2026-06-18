@@ -44,26 +44,61 @@ PDF와 이미지는 악보 데이터가 아니라 그림입니다.
 OMR은 쉽게 말해 “악보 OCR”입니다.
 
 현재는 로컬 Audiveris 변환기를 찾습니다.
-Audiveris가 없으면 실제 변환 대신 예제 악보를 보여주면서 화면 흐름을 확인할 수 있게 합니다.
+
+Audiveris가 없으면 앱은 변환된 척하지 않습니다.
+
+Audiveris를 설치해야 실제 PDF/이미지 악보를 MusicXML로 분석하고, 그 결과를 조옮김/TAB 변환할 수 있습니다.
+
+## 처음 설치할 것
+
+### exe로 받은 사람
+
+1. TABtransporter를 실행합니다.
+2. 왼쪽 `OMR 변환기`에서 `Audiveris 설치`를 누릅니다.
+3. Windows 설치 창이 뜨면 설치를 끝냅니다.
+4. 앱을 다시 열거나 PDF/이미지를 다시 엽니다.
+
+### GitHub에서 clone 받은 사람
+
+처음 한 번만 실행합니다.
+
+```powershell
+npm install
+npm run setup:audiveris
+```
+
+그 다음 앱을 실행합니다.
+
+```powershell
+npm run dev
+```
+
+### Audiveris 설치 기준
+
+- 공식 GitHub Releases에서 최신 `windowsConsole-x86_64.msi`를 받습니다.
+- `audiveris.com`은 공식 사이트가 아닙니다. 쓰지 않습니다.
+- 설치 후 `AUDIVERIS_BIN` 사용자 환경 변수를 자동으로 잡습니다.
+- 앱은 `AUDIVERIS_BIN`, PATH, Program Files 기본 위치를 순서대로 찾습니다.
 
 ## 실행 방법
 
 개발용 실행:
 
-```bash
+```powershell
 npm install
+npm run setup:audiveris
 npm run dev
 ```
 
 빌드:
 
-```bash
+```powershell
 npm run build
 ```
 
 Windows 설치 파일 만들기:
 
-```bash
+```powershell
 npm run package:win
 ```
 
@@ -89,15 +124,16 @@ release/TABtransporter Setup 0.1.0.exe
    - 4현 베이스
 5. 오른쪽에서 조옮김 간격을 고릅니다.
 6. 카포가 있으면 카포 숫자를 넣습니다.
-7. 가운데 `변환된 TAB`에서 추천 운지를 확인합니다.
-8. `재생`을 눌러 소리를 확인합니다.
-9. 결과가 괜찮으면 `PDF 저장` 또는 `PNG 저장`을 누릅니다.
+7. `변환하기`를 누릅니다.
+8. 가운데 `변환된 악보/TAB`에서 일반 음표와 추천 운지를 확인합니다.
+9. `재생`을 눌러 소리를 확인합니다.
+10. 결과가 괜찮으면 `PDF 저장` 또는 `PNG 저장`을 누릅니다.
 
 ## 화면 구조
 
 - 왼쪽: 파일 정보, 악기 선택
 - 가운데 왼쪽: 원본 PDF/이미지
-- 가운데 오른쪽: 변환된 TAB
+- 가운데 오른쪽: 변환된 일반 악보와 TAB
 - 오른쪽: 조옮김, 카포, 변환 상태, 내보내기
 - 아래: 재생, 정지, 현재 상태
 
@@ -108,8 +144,10 @@ Audiveris를 설치한 경우 앱이 다음 위치를 자동으로 찾습니다.
 ```text
 C:\Program Files\Audiveris\bin\Audiveris.bat
 C:\Program Files\Audiveris\Audiveris.exe
+C:\Program Files\Audiveris\Audiveris.bat
 C:\Program Files (x86)\Audiveris\bin\Audiveris.bat
 C:\Program Files (x86)\Audiveris\Audiveris.exe
+C:\Program Files (x86)\Audiveris\Audiveris.bat
 ```
 
 다른 위치에 있다면 `AUDIVERIS_BIN` 환경 변수에 실행 파일 경로를 넣으면 됩니다.
@@ -118,6 +156,12 @@ C:\Program Files (x86)\Audiveris\Audiveris.exe
 
 ```powershell
 $env:AUDIVERIS_BIN="C:\path\to\Audiveris.bat"
+```
+
+설치 스크립트만 다시 돌리고 싶으면:
+
+```powershell
+npm run setup:audiveris
 ```
 
 ## 개발자가 확인할 것

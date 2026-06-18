@@ -96,6 +96,14 @@ export interface ConversionResult {
   diagnostics: string[];
 }
 
+export interface AudiverisStatus {
+  installed: boolean;
+  path?: string;
+  version?: string;
+  releaseUrl?: string;
+  message: string;
+}
+
 export interface ExportRequest {
   format: OutputFormat;
   defaultFileName: string;

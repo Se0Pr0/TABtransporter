@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExportRequest, ExportResult, OpenedScoreFile } from "../shared/types";
+import { getAudiverisStatus, installAudiveris } from "./audiveris";
 import { convertWithLocalOmr } from "./converter";
 import { ensureExtension, readScoreFile } from "./fileAccess";
 
@@ -70,6 +71,14 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("score:convert", async (_event, sourcePath: string) => {
     return convertWithLocalOmr(sourcePath);
+  });
+
+  ipcMain.handle("audiveris:status", async () => {
+    return getAudiverisStatus();
+  });
+
+  ipcMain.handle("audiveris:install", async () => {
+    return installAudiveris();
   });
 
   ipcMain.handle("export:save", async (_event, request: ExportRequest): Promise<ExportResult> => {
