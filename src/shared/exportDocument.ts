@@ -19,6 +19,8 @@ export function buildExportHtml(options: ExportDocumentOptions): string {
     return buildLayoutPreservingHtml(options, layoutPages, layoutNotes);
   }
 
+  throw new Error("원본과 같은 형식으로 저장할 원본 페이지 레이아웃 데이터가 없습니다.");
+
   const systems = score.tracks.map((track) => {
     const preset = getInstrumentPreset(track.instrumentPresetId);
     const measures = groupByMeasure(track.notes);

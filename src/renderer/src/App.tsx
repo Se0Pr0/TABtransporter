@@ -216,6 +216,11 @@ export function App() {
 
   async function exportResult(format: "pdf" | "png") {
     if (convertedScore && convertedMeta) {
+      if (!hasOriginalLayout(convertedScore)) {
+        setStatus("원본과 같은 형식으로 저장할 수 없습니다. 원본 페이지 레이아웃 데이터가 있는 PDF/이미지 변환 결과만 저장합니다.");
+        return;
+      }
+
       const html = buildExportHtml({
         score: convertedScore,
         sourceName: convertedMeta.sourceName,
@@ -342,7 +347,7 @@ export function App() {
               hasOriginalLayout(convertedScore) && openedFile ? (
                 <LayoutRewritePreview file={openedFile} score={convertedScore} activeNoteId={playback.activeNoteId} />
               ) : (
-                <TabPreview score={convertedScore} activeNoteId={playback.activeNoteId} />
+                <StrictLayoutMissing />
               )
             ) : (
               <PendingResult />
@@ -497,6 +502,15 @@ function PendingResult() {
   );
 }
 
+function StrictLayoutMissing() {
+  return (
+    <div className="empty-preview">
+      <AlertTriangle size={42} />
+      <span>원본과 같은 형식으로 변환할 레이아웃 데이터가 없습니다.</span>
+    </div>
+  );
+}
+
 function AnalysisOverlay({ progress, fileName }: { progress: OmrProgress; fileName?: string }) {
   const phaseLabel = {
     preparing: "준비",
@@ -527,7 +541,7 @@ function AnalysisOverlay({ progress, fileName }: { progress: OmrProgress; fileNa
 }
 
 function hasOriginalLayout(score: ScoreModel): boolean {
-  return score.tracks.some((track) => track.notes.some((note) => note.originalSource));
+  return Boolean(score.layoutPages?.some((page) => page.dataUrl)) && score.tracks.some((track) => track.notes.some((note) => note.originalSource));
 }
 
 const STAFF_PX_PER_SEMITONE = 3.8;

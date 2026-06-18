@@ -5,7 +5,7 @@ import { buildExportHtml } from "./exportDocument";
 import type { ScoreModel } from "./types";
 
 describe("export document", () => {
-  it("builds a re-engraved score and TAB document for export", () => {
+  it("rejects export when source layout is unavailable", () => {
     const options = {
       semitones: 2,
       capo: 0,
@@ -13,25 +13,15 @@ describe("export document", () => {
     };
     const result = transposeAndRemap(createTestScore(), options);
 
-    const html = buildExportHtml({
-      score: result.score,
-      sourceName: "sample.pdf",
-      instrumentName: GUITAR_STANDARD_6.name,
-      transposeOptions: options,
-      warnings: result.warnings
-    });
-
-    expect(html).toContain("변환 결과");
-    expect(html).toContain("sample.pdf");
-    expect(html).toContain("반음 +2");
-    expect(html).toContain("일반 악보");
-    expect(html).toContain("TAB");
-    expect(html).toContain("note-head");
-    expect(html).toContain("tab-fret");
-    expect(html).toContain("추천 운지");
-    expect(html).toContain("번줄");
-    expect(html).not.toContain("PDF/이미지 열기");
-    expect(html).not.toContain("<table");
+    expect(() =>
+      buildExportHtml({
+        score: result.score,
+        sourceName: "sample.pdf",
+        instrumentName: GUITAR_STANDARD_6.name,
+        transposeOptions: options,
+        warnings: result.warnings
+      })
+    ).toThrow("원본과 같은 형식");
   });
 
   it("uses source page layout when OMR coordinates are available", () => {
