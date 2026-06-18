@@ -164,6 +164,26 @@ $env:AUDIVERIS_BIN="C:\path\to\Audiveris.bat"
 npm run setup:audiveris
 ```
 
+## 로그 확인
+
+앱은 실행할 때마다 로그를 남깁니다.
+
+기본 위치:
+
+```text
+%AppData%\TABtransporter\logs
+```
+
+앱 오른쪽 `로그` 패널에서 `로그 폴더 열기`를 누르면 바로 열 수 있습니다.
+
+PDF/이미지 변환이 실패하면 `확인할 것` 패널에 다음이 표시됩니다.
+
+- Audiveris 로그 파일 경로
+- 실패 원인 요약
+- 중요한 WARN/Exception 줄
+
+예를 들어 Audiveris가 박자표나 마디 길이를 확정하지 못하면 MusicXML export가 실패하고, 이 경우 `변환하기` 버튼은 비활성화됩니다.
+
 ## 개발자가 확인할 것
 
 타입 체크:

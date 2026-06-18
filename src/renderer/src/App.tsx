@@ -22,6 +22,7 @@ import type {
   AudiverisStatus,
   ConversionResult,
   FingeringWarning,
+  LogInfo,
   OpenedScoreFile,
   ScoreModel,
   TransposeOptions
@@ -68,6 +69,7 @@ export function App() {
   const [convertedScore, setConvertedScore] = useState<ScoreModel | undefined>();
   const [convertedMeta, setConvertedMeta] = useState<ConvertedMeta | undefined>();
   const [audiveris, setAudiveris] = useState<AudiverisStatus | undefined>();
+  const [logInfo, setLogInfo] = useState<LogInfo | undefined>();
   const [installingAudiveris, setInstallingAudiveris] = useState(false);
   const [instrumentId, setInstrumentId] = useState(INSTRUMENT_PRESETS[0].id);
   const [semitones, setSemitones] = useState(0);
@@ -81,11 +83,22 @@ export function App() {
 
   useEffect(() => {
     void refreshAudiverisStatus();
+    void refreshLogInfo();
   }, []);
 
   async function refreshAudiverisStatus() {
     const next = await window.tabTransporter.getAudiverisStatus();
     setAudiveris(next);
+  }
+
+  async function refreshLogInfo() {
+    const next = await window.tabTransporter.getLogInfo();
+    setLogInfo(next);
+  }
+
+  async function openLogFolder() {
+    const result = await window.tabTransporter.openLogFolder();
+    setStatus(result.message);
   }
 
   async function installAudiveris() {
@@ -119,6 +132,7 @@ export function App() {
     const result = await window.tabTransporter.convertScoreFile(file.path);
     setConversion(result);
     await refreshAudiverisStatus();
+    await refreshLogInfo();
     if (result.score && result.score.tracks.some((track) => track.notes.length > 0)) {
       setSourceScore(result.score);
       setStatus("악보 분석이 끝났습니다. 조옮김 옵션을 고르고 변환하기를 누르세요.");
@@ -348,6 +362,30 @@ export function App() {
               ))}
             </ul>
           )}
+
+          {conversion?.logPath && (
+            <div className="log-summary">
+              <strong>변환 로그</strong>
+              <p>{conversion.logPath}</p>
+              {conversion.logExcerpt?.length ? (
+                <pre>{conversion.logExcerpt.join("\n")}</pre>
+              ) : (
+                <p className="muted">로그 파일에 자세한 실행 기록이 저장되었습니다.</p>
+              )}
+            </div>
+          )}
+        </section>
+
+        <section className="panel">
+          <h2>
+            <FileText size={17} />
+            로그
+          </h2>
+          <p className="path-text">{logInfo?.directory ?? "로그 위치 확인 중"}</p>
+          <button className="secondary-action" onClick={openLogFolder}>
+            <FolderOpen size={16} />
+            로그 폴더 열기
+          </button>
         </section>
 
         <section className="panel">

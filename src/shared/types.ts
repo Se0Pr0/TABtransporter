@@ -92,8 +92,15 @@ export interface ConversionResult {
   sourcePath: string;
   message: string;
   musicXmlPath?: string;
+  logPath?: string;
+  logExcerpt?: string[];
   score?: ScoreModel;
   diagnostics: string[];
+}
+
+export interface LogInfo {
+  directory: string;
+  appLogFile: string;
 }
 
 export interface AudiverisStatus {

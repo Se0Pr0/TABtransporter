@@ -1,16 +1,18 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExportRequest, ExportResult, OpenedScoreFile } from "../shared/types";
 import { getAudiverisStatus, installAudiveris } from "./audiveris";
 import { convertWithLocalOmr } from "./converter";
 import { ensureExtension, readScoreFile } from "./fileAccess";
+import { getLogInfo, setLogDirectory, writeAppLog } from "./logger";
 
 const isDev = !app.isPackaged;
 
 let mainWindow: BrowserWindow | undefined;
 
 function createWindow(): void {
+  void writeAppLog("app", "creating main window");
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 960,
@@ -33,7 +35,9 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  setLogDirectory(join(app.getPath("userData"), "logs"));
+  await writeAppLog("app", "ready", { version: app.getVersion(), packaged: app.isPackaged });
   registerIpcHandlers();
   createWindow();
 
@@ -52,6 +56,7 @@ app.on("window-all-closed", () => {
 
 function registerIpcHandlers(): void {
   ipcMain.handle("score:open", async (): Promise<OpenedScoreFile | undefined> => {
+    await writeAppLog("file", "open dialog requested");
     const result = await dialog.showOpenDialog(mainWindow!, {
       title: "악보 PDF 또는 이미지 열기",
       properties: ["openFile"],
@@ -63,26 +68,43 @@ function registerIpcHandlers(): void {
     });
 
     if (result.canceled || result.filePaths.length === 0) {
+      await writeAppLog("file", "open dialog cancelled");
       return undefined;
     }
 
+    await writeAppLog("file", "file selected", { path: result.filePaths[0] });
     return readScoreFile(result.filePaths[0]);
   });
 
   ipcMain.handle("score:convert", async (_event, sourcePath: string) => {
+    await writeAppLog("omr", "ipc convert requested", { sourcePath });
     return convertWithLocalOmr(sourcePath);
   });
 
   ipcMain.handle("audiveris:status", async () => {
+    await writeAppLog("audiveris", "status requested");
     return getAudiverisStatus();
   });
 
   ipcMain.handle("audiveris:install", async () => {
+    await writeAppLog("audiveris", "install requested");
     return installAudiveris();
+  });
+
+  ipcMain.handle("logs:info", async () => {
+    return getLogInfo();
+  });
+
+  ipcMain.handle("logs:openFolder", async () => {
+    const info = getLogInfo();
+    await writeAppLog("logs", "open folder requested", { directory: info.directory });
+    const error = await shell.openPath(info.directory);
+    return error ? { status: "failed", message: error } : { status: "opened", message: "로그 폴더를 열었습니다." };
   });
 
   ipcMain.handle("export:save", async (_event, request: ExportRequest): Promise<ExportResult> => {
     if (!mainWindow) {
+      await writeAppLog("export", "save failed because main window missing", { format: request.format });
       return { status: "failed", message: "내보낼 활성 창이 없습니다." };
     }
 
@@ -94,6 +116,7 @@ function registerIpcHandlers(): void {
     });
 
     if (result.canceled || !result.filePath) {
+      await writeAppLog("export", "save cancelled", { format: request.format });
       return { status: "cancelled", message: "내보내기를 취소했습니다." };
     }
 
@@ -125,8 +148,13 @@ function registerIpcHandlers(): void {
         await writeFile(result.filePath, image.toPNG());
       }
 
+      await writeAppLog("export", "save completed", { format: request.format, path: result.filePath });
       return { status: "saved", path: result.filePath, message: `${result.filePath}에 저장했습니다.` };
     } catch (error) {
+      await writeAppLog("export", "save failed", {
+        format: request.format,
+        message: error instanceof Error ? error.message : "unknown"
+      });
       return {
         status: "failed",
         message: error instanceof Error ? error.message : "알 수 없는 내보내기 오류입니다."

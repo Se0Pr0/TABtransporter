@@ -482,3 +482,37 @@ button:disabled {
   color: #746e64;
   overflow-wrap: anywhere;
 }
+
+.log-summary {
+  margin-top: 12px;
+  border-top: 1px solid #ded6cb;
+  padding-top: 12px;
+}
+
+.log-summary strong {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.log-summary p {
+  margin: 0 0 8px;
+  color: #746e64;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.log-summary pre {
+  max-height: 220px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid #ded6cb;
+  border-radius: 6px;
+  background: #fffdf9;
+  color: #4d463f;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
