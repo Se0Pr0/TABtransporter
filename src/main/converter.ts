@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { ConversionResult } from "../shared/types";
-import { createDemoScore } from "../shared/score";
+import { noteNameToMidi } from "../shared/pitch";
+import type { NoteEvent, ScoreModel } from "../shared/types";
 
 const AUDIVERIS_TIMEOUT_MS = 180_000;
 
@@ -16,11 +17,10 @@ export async function convertWithLocalOmr(sourcePath: string): Promise<Conversio
     return {
       status: "needs_converter",
       sourcePath,
-      message: "로컬 Audiveris 실행 파일을 찾지 못했습니다. 흐름을 확인할 수 있도록 예제 악보를 표시했습니다.",
-      score: createDemoScore(),
+      message: "로컬 Audiveris 실행 파일을 찾지 못했습니다. 실제 PDF/이미지 악보 분석을 하려면 Audiveris 연결이 필요합니다.",
       diagnostics: [
         "AUDIVERIS_BIN 환경 변수를 Audiveris 실행 파일로 지정하거나 지원되는 로컬 변환기를 설치하세요.",
-        "현재 표시된 예제는 실제 OMR 변환 결과가 아닙니다."
+        "실제 악보 분석 결과가 없으므로 변환 결과를 만들지 않습니다."
       ]
     };
   }
@@ -43,11 +43,24 @@ export async function convertWithLocalOmr(sourcePath: string): Promise<Conversio
       };
     }
 
+    const musicXml = await readFile(output, "utf8");
+    const score = parseMusicXmlToScore(musicXml, basename(sourcePath));
+
+    if (!score.tracks.some((track) => track.notes.length > 0)) {
+      return {
+        status: "failed",
+        sourcePath,
+        message: "MusicXML은 생성됐지만 인식된 음표가 없습니다. 원본 악보와 OMR 설정을 확인해야 합니다.",
+        diagnostics: [...diagnostics, `MusicXML 결과 파일: ${output}`]
+      };
+    }
+
     return {
       status: "converted",
       sourcePath,
       musicXmlPath: output,
       message: `${basename(sourcePath)} 파일을 MusicXML로 변환했습니다.`,
+      score,
       diagnostics
     };
   } catch (error) {
@@ -70,6 +83,11 @@ function resolveAudiverisPath(): string | undefined {
     return explicit;
   }
 
+  const pathExecutable = resolveFromPath("audiveris");
+  if (pathExecutable) {
+    return pathExecutable;
+  }
+
   const candidates = [
     "C:\\Program Files\\Audiveris\\bin\\Audiveris.bat",
     "C:\\Program Files\\Audiveris\\Audiveris.exe",
@@ -78,6 +96,21 @@ function resolveAudiverisPath(): string | undefined {
   ];
 
   return candidates.find((candidate) => existsSync(candidate));
+}
+
+function resolveFromPath(command: string): string | undefined {
+  const result = spawnSync("where.exe", [command], {
+    windowsHide: true,
+    encoding: "utf8"
+  });
+  if (result.status !== 0) {
+    return undefined;
+  }
+
+  return result.stdout
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .find((item) => item.length > 0 && existsSync(item));
 }
 
 function runAudiveris(audiverisPath: string, sourcePath: string, outputDir: string): Promise<void> {
@@ -116,16 +149,156 @@ function runAudiveris(audiverisPath: string, sourcePath: string, outputDir: stri
 }
 
 async function findMusicXml(directory: string): Promise<string | undefined> {
-  const entries = await readdir(directory, { recursive: true, withFileTypes: true });
+  const entries = await readdir(directory, { withFileTypes: true });
+  let mxlCandidate: string | undefined;
+
   for (const entry of entries) {
-    if (!entry.isFile()) {
+    const filePath = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      const nested = await findMusicXml(filePath);
+      if (nested) {
+        return nested;
+      }
       continue;
     }
 
+    if (!entry.isFile()) {
+      continue;
+    }
     const extension = extname(entry.name).toLowerCase();
-    if (extension === ".xml" || extension === ".musicxml" || extension === ".mxl") {
-      return join(entry.parentPath, entry.name);
+    if (extension === ".xml" || extension === ".musicxml") {
+      return filePath;
+    }
+    if (extension === ".mxl") {
+      mxlCandidate = mxlCandidate ?? filePath;
     }
   }
-  return undefined;
+
+  return mxlCandidate;
+}
+
+export function parseMusicXmlToScore(musicXml: string, title = "변환된 악보"): ScoreModel {
+  const notes: NoteEvent[] = [];
+  const measureRegex = /<measure\b([^>]*)>([\s\S]*?)<\/measure>/gi;
+  let measureMatch: RegExpExecArray | null;
+  let noteIndex = 1;
+  let divisions = 1;
+  const timeSignature = parseTimeSignature(musicXml);
+  const parsedTitle = parseTextElement(musicXml, "movement-title") ?? parseTextElement(musicXml, "work-title") ?? title;
+  const tempo = parseTempo(musicXml);
+
+  while ((measureMatch = measureRegex.exec(musicXml))) {
+    const measureAttributes = measureMatch[1];
+    const measureBody = measureMatch[2];
+    const numberMatch = /number="([^"]+)"/.exec(measureAttributes);
+    const parsedMeasure = numberMatch ? Number.parseInt(numberMatch[1], 10) : Number.NaN;
+    const measure = Number.isFinite(parsedMeasure) && parsedMeasure > 0 ? parsedMeasure : (notes.at(-1)?.measure ?? 1);
+    const divisionsMatch = /<divisions>(\d+)<\/divisions>/.exec(measureBody);
+    if (divisionsMatch) {
+      divisions = Number.parseInt(divisionsMatch[1], 10) || divisions;
+    }
+    let beat = 1;
+    let lastOnset = 1;
+
+    const noteRegex = /<note\b[^>]*>([\s\S]*?)<\/note>/gi;
+    let noteMatch: RegExpExecArray | null;
+    while ((noteMatch = noteRegex.exec(measureBody))) {
+      const body = noteMatch[1];
+      const durationMatch = /<duration>(\d+)<\/duration>/.exec(body);
+      const durationBeats = durationMatch ? Math.max(0.25, Number.parseInt(durationMatch[1], 10) / divisions) : 1;
+      const isChord = /<chord\s*\/?>/.test(body);
+
+      if (/<rest\b/.test(body)) {
+        if (!isChord) {
+          beat += durationBeats;
+        }
+        continue;
+      }
+
+      const step = /<step>([A-G])<\/step>/.exec(body)?.[1];
+      const octave = /<octave>(-?\d+)<\/octave>/.exec(body)?.[1];
+      const alter = /<alter>(-?\d+)<\/alter>/.exec(body)?.[1];
+
+      if (!step || octave === undefined) {
+        if (!isChord) {
+          beat += durationBeats;
+        }
+        continue;
+      }
+
+      const alterValue = alter ? Number.parseInt(alter, 10) || 0 : 0;
+      const midi = noteNameToMidi(`${step}${octave}`) + alterValue;
+      if (midi < 0 || midi > 127) {
+        if (!isChord) {
+          beat += durationBeats;
+        }
+        continue;
+      }
+      const noteBeat = isChord ? lastOnset : beat;
+
+      notes.push({
+        id: `omr-${noteIndex++}`,
+        measure,
+        beat: noteBeat,
+        durationBeats,
+        midi,
+        source: "omr",
+        confidence: 0.8
+      });
+      if (!isChord) {
+        lastOnset = beat;
+        beat += durationBeats;
+      }
+    }
+  }
+
+  return {
+    id: "omr-score",
+    title: parsedTitle,
+    tempo,
+    timeSignature,
+    tracks: [
+      {
+        id: "omr-track-1",
+        name: "OMR 악보",
+        instrumentPresetId: "guitar-standard-6",
+        notes
+      }
+    ]
+  };
+}
+
+function parseTimeSignature(musicXml: string): [number, number] {
+  const timeMatch = /<time\b[^>]*>[\s\S]*?<beats>(\d+)<\/beats>[\s\S]*?<beat-type>(\d+)<\/beat-type>[\s\S]*?<\/time>/i.exec(
+    musicXml
+  );
+  if (!timeMatch) {
+    return [4, 4];
+  }
+
+  const beats = Number.parseInt(timeMatch[1], 10);
+  const beatType = Number.parseInt(timeMatch[2], 10);
+  return [beats || 4, beatType || 4];
+}
+
+function parseTempo(musicXml: string): number {
+  const soundTempo = /<sound\b[^>]*tempo="([^"]+)"/i.exec(musicXml)?.[1];
+  const metronomeTempo = /<per-minute>(\d+)<\/per-minute>/i.exec(musicXml)?.[1];
+  const tempo = Number.parseFloat(soundTempo ?? metronomeTempo ?? "");
+  return Number.isFinite(tempo) && tempo > 0 ? tempo : 92;
+}
+
+function parseTextElement(musicXml: string, tagName: string): string | undefined {
+  const match = new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, "i").exec(musicXml);
+  const value = match?.[1]?.replace(/<[^>]+>/g, "").trim();
+  return value ? decodeXmlText(value) : undefined;
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'");
 }

@@ -97,21 +97,30 @@ export function transposeAndRemap(score: ScoreModel, options: TransposeOptions):
   for (const track of transposed.tracks) {
     track.instrumentPresetId = preset.id;
     let previous: NoteEvent | undefined;
+    const usedStringsByOnset = new Map<string, Set<number>>();
 
     for (const note of track.notes) {
-      const candidate = recommendFingering(note, preset, options.capo, previous);
+      const candidates = generateFingeringCandidates(note.midi, preset, options.capo, previous);
+      const onsetKey = `${note.measure}:${note.beat}`;
+      const usedStrings = usedStringsByOnset.get(onsetKey) ?? new Set<number>();
+      const candidate = candidates.find((item) => !usedStrings.has(item.stringNumber));
 
       if (!candidate) {
+        const hasPitchCandidate = candidates.length > 0;
         warnings.push({
           noteId: note.id,
           measure: note.measure,
           severity: "error",
-          message: `${preset.name}에서 MIDI ${note.midi} 음을 칠 수 있는 위치가 없습니다.`
+          message: hasPitchCandidate
+            ? `${preset.name}에서 같은 박자에 비어 있는 줄이 없어 MIDI ${note.midi} 운지를 배정하지 못했습니다.`
+            : `${preset.name}에서 MIDI ${note.midi} 음을 칠 수 있는 위치가 없습니다.`
         });
         previous = note;
         continue;
       }
 
+      usedStrings.add(candidate.stringNumber);
+      usedStringsByOnset.set(onsetKey, usedStrings);
       note.tab = {
         stringNumber: candidate.stringNumber,
         fret: candidate.fret,

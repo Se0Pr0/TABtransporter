@@ -9,14 +9,16 @@ import {
   Play,
   RefreshCw,
   Save,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Wand2
 } from "lucide-react";
-import { useMemo, useState } from "react";
-import { INSTRUMENT_PRESETS } from "../../shared/instruments";
+import { useState } from "react";
+import { getInstrumentPreset, INSTRUMENT_PRESETS } from "../../shared/instruments";
 import { transposeAndRemap } from "../../shared/fingering";
 import { midiToNoteName } from "../../shared/pitch";
-import { createDemoScore } from "../../shared/score";
-import type { ConversionResult, FingeringWarning, OpenedScoreFile, ScoreModel } from "../../shared/types";
+import { createEmptyScore } from "../../shared/score";
+import { buildExportHtml } from "../../shared/exportDocument";
+import type { ConversionResult, FingeringWarning, OpenedScoreFile, ScoreModel, TransposeOptions } from "../../shared/types";
 import { usePlayback } from "./usePlayback";
 
 const KEY_OPTIONS = [
@@ -44,27 +46,29 @@ const CONVERSION_STATUS_LABEL = {
   failed: "변환 실패"
 } as const;
 
+interface ConvertedMeta {
+  sourceName: string;
+  instrumentName: string;
+  options: TransposeOptions;
+}
+
+const EMPTY_SCORE = createEmptyScore();
+
 export function App() {
   const [openedFile, setOpenedFile] = useState<OpenedScoreFile | undefined>();
   const [conversion, setConversion] = useState<ConversionResult | undefined>();
-  const [sourceScore, setSourceScore] = useState<ScoreModel>(() => createDemoScore());
+  const [sourceScore, setSourceScore] = useState<ScoreModel | undefined>();
+  const [convertedScore, setConvertedScore] = useState<ScoreModel | undefined>();
+  const [convertedMeta, setConvertedMeta] = useState<ConvertedMeta | undefined>();
   const [instrumentId, setInstrumentId] = useState(INSTRUMENT_PRESETS[0].id);
   const [semitones, setSemitones] = useState(0);
   const [capo, setCapo] = useState(0);
-  const [status, setStatus] = useState("준비 완료");
+  const [status, setStatus] = useState("원본을 열고 변환 옵션을 고른 뒤 변환하기를 누르세요.");
   const [warnings, setWarnings] = useState<FingeringWarning[]>([]);
 
-  const remapped = useMemo(() => {
-    const result = transposeAndRemap(sourceScore, {
-      semitones,
-      capo,
-      instrumentPresetId: instrumentId
-    });
-    setTimeout(() => setWarnings(result.warnings), 0);
-    return result.score;
-  }, [sourceScore, semitones, capo, instrumentId]);
-
-  const playback = usePlayback(remapped);
+  const playback = usePlayback(convertedScore ?? EMPTY_SCORE);
+  const selectedInstrument = INSTRUMENT_PRESETS.find((preset) => preset.id === instrumentId) ?? INSTRUMENT_PRESETS[0];
+  const hasSourceNotes = Boolean(sourceScore?.tracks.some((track) => track.notes.length > 0));
 
   async function openFile() {
     const file = await window.tabTransporter.openScoreFile();
@@ -73,21 +77,67 @@ export function App() {
     }
 
     setOpenedFile(file);
-    setStatus(`${file.name} 파일을 열었습니다.`);
+    setStatus(`${file.name} 파일을 열었습니다. 실제 악보 분석을 시작합니다.`);
     setConversion(undefined);
+    setSourceScore(undefined);
+    setConvertedScore(undefined);
+    setConvertedMeta(undefined);
+    setWarnings([]);
 
     const result = await window.tabTransporter.convertScoreFile(file.path);
     setConversion(result);
-    setStatus(result.message);
-    if (result.score) {
+    if (result.score && result.score.tracks.some((track) => track.notes.length > 0)) {
       setSourceScore(result.score);
+      setStatus("악보 분석이 끝났습니다. 조옮김 옵션을 고르고 변환하기를 누르세요.");
+      return;
     }
+    setStatus(result.message);
   }
 
-  async function exportView(format: "pdf" | "png") {
+  function convertScore() {
+    if (!sourceScore || !hasSourceNotes) {
+      setStatus("먼저 실제 PDF/이미지 악보를 열고 분석이 끝나야 변환할 수 있습니다.");
+      return;
+    }
+
+    const options: TransposeOptions = {
+      semitones,
+      capo,
+      instrumentPresetId: instrumentId
+    };
+    const result = transposeAndRemap(sourceScore, options);
+    const convertedTitle = `${sourceScore.title.replace(/\.[^.]+$/, "")} 변환 결과`;
+    const nextScore = {
+      ...result.score,
+      title: convertedTitle
+    };
+    setConvertedScore(nextScore);
+    setWarnings(result.warnings);
+    setConvertedMeta({
+      sourceName: openedFile?.name ?? sourceScore.title,
+      instrumentName: selectedInstrument.name,
+      options
+    });
+    setStatus("변환이 끝났습니다. 변환된 일반 음표와 TAB 운지를 확인한 뒤 재생하거나 저장하세요.");
+  }
+
+  async function exportResult(format: "pdf" | "png") {
+    if (!convertedScore || !convertedMeta) {
+      setStatus("먼저 변환하기를 눌러 변환된 악보를 만들어야 저장할 수 있습니다.");
+      return;
+    }
+
+    const html = buildExportHtml({
+      score: convertedScore,
+      sourceName: convertedMeta.sourceName,
+      instrumentName: convertedMeta.instrumentName,
+      transposeOptions: convertedMeta.options,
+      warnings
+    });
     const result = await window.tabTransporter.exportCurrentView({
       format,
-      defaultFileName: `${remapped.title || "tabtransporter"}-조옮김.${format}`
+      html,
+      defaultFileName: `${convertedScore.title || "tabtransporter"}-변환결과.${format}`
     });
     setStatus(result.message);
   }
@@ -117,7 +167,7 @@ export function App() {
             </div>
             <div>
               <dt>형식</dt>
-              <dd>{openedFile ? SOURCE_KIND_LABEL[openedFile.kind] : "예제"}</dd>
+              <dd>{openedFile ? SOURCE_KIND_LABEL[openedFile.kind] : "없음"}</dd>
             </div>
             <div>
               <dt>OMR</dt>
@@ -146,16 +196,16 @@ export function App() {
         <header className="toolbar">
           <div>
             <span className="eyebrow">작업 화면</span>
-            <h1>{remapped.title}</h1>
+            <h1>{convertedScore?.title ?? sourceScore?.title ?? openedFile?.name ?? "악보 변환"}</h1>
           </div>
           <div className="toolbar-actions">
-            <button onClick={() => exportView("pdf")}>
+            <button onClick={() => exportResult("pdf")} disabled={!convertedScore}>
               <FileText size={17} />
-              PDF
+              PDF 저장
             </button>
-            <button onClick={() => exportView("png")}>
+            <button onClick={() => exportResult("png")} disabled={!convertedScore}>
               <FileImage size={17} />
-              PNG
+              PNG 저장
             </button>
           </div>
         </header>
@@ -171,15 +221,19 @@ export function App() {
 
           <section className="score-pane">
             <div className="pane-heading">
-              <span>변환된 TAB</span>
-              <small>자동 운지 추천</small>
+              <span>변환된 악보/TAB</span>
+              <small>변환하기를 누른 뒤 저장됩니다</small>
             </div>
-            <TabPreview score={remapped} activeNoteId={playback.activeNoteId} />
+            {convertedScore ? (
+              <TabPreview score={convertedScore} activeNoteId={playback.activeNoteId} />
+            ) : (
+              <PendingResult />
+            )}
           </section>
         </div>
 
         <footer className="transport">
-          <button className="icon-action" onClick={playback.play} disabled={playback.playing}>
+          <button className="icon-action" onClick={playback.play} disabled={playback.playing || !convertedScore}>
             <Play size={18} />
             재생
           </button>
@@ -195,11 +249,11 @@ export function App() {
         <section className="panel">
           <h2>
             <SlidersHorizontal size={17} />
-            조옮김
+            변환 옵션
           </h2>
 
           <label className="field">
-            <span>이동 간격</span>
+            <span>조옮김</span>
             <select value={semitones} onChange={(event) => setSemitones(Number(event.target.value))}>
               {KEY_OPTIONS.map((option) => (
                 <option key={option.label} value={option.semitones}>
@@ -214,9 +268,14 @@ export function App() {
             <input min={0} max={12} type="number" value={capo} onChange={(event) => setCapo(Number(event.target.value))} />
           </label>
 
+          <button className="convert-action" onClick={convertScore} disabled={!hasSourceNotes}>
+            <Wand2 size={17} />
+            변환하기
+          </button>
+
           <button className="secondary-action" onClick={() => setSemitones(0)}>
             <RefreshCw size={16} />
-            간격 초기화
+            조옮김 초기화
           </button>
         </section>
 
@@ -247,15 +306,15 @@ export function App() {
         <section className="panel">
           <h2>
             <Save size={17} />
-            내보내기
+            결과 저장
           </h2>
-          <button className="secondary-action" onClick={() => exportView("pdf")}>
+          <button className="secondary-action" onClick={() => exportResult("pdf")} disabled={!convertedScore}>
             <Download size={16} />
-            PDF 저장
+            변환 결과 PDF 저장
           </button>
-          <button className="secondary-action" onClick={() => exportView("png")}>
+          <button className="secondary-action" onClick={() => exportResult("png")} disabled={!convertedScore}>
             <Download size={16} />
-            PNG 저장
+            변환 결과 PNG 저장
           </button>
         </section>
       </aside>
@@ -279,8 +338,27 @@ function EmptyPreview() {
   );
 }
 
+function PendingResult() {
+  return (
+    <div className="empty-preview">
+      <Wand2 size={42} />
+      <span>옵션을 고른 뒤 변환하기를 누르면 결과 악보가 여기에 나옵니다</span>
+    </div>
+  );
+}
+
 function TabPreview({ score, activeNoteId }: { score: ScoreModel; activeNoteId?: string }) {
   const track = score.tracks[0];
+  if (!track || track.notes.length === 0) {
+    return (
+      <div className="empty-preview">
+        <FileText size={42} />
+        <span>변환된 음표가 없습니다</span>
+      </div>
+    );
+  }
+
+  const preset = getInstrumentPreset(track.instrumentPresetId);
   const measures = new Map<number, typeof track.notes>();
   for (const note of track.notes) {
     const items = measures.get(note.measure) ?? [];
@@ -289,20 +367,81 @@ function TabPreview({ score, activeNoteId }: { score: ScoreModel; activeNoteId?:
   }
 
   return (
-    <div className="tab-preview">
+    <div className="tab-preview result-score" aria-label="변환된 일반 악보와 TAB">
       {Array.from(measures.entries()).map(([measure, notes]) => (
-        <div className="measure" key={measure}>
-          <span className="measure-label">{measure}마디</span>
-          {notes.map((note) => (
-            <div className={`note-chip ${activeNoteId === note.id ? "active" : ""}`} key={note.id}>
-              <strong>{midiToNoteName(note.midi)}</strong>
-              <span>
-                {note.tab ? `${note.tab.stringNumber}번줄 ${note.tab.fret}프렛` : "운지 없음"}
-              </span>
-            </div>
-          ))}
-        </div>
+        <MeasurePreview
+          key={measure}
+          measure={measure}
+          notes={notes}
+          activeNoteId={activeNoteId}
+          stringCount={preset.stringCount}
+        />
       ))}
     </div>
+  );
+}
+
+function MeasurePreview({
+  measure,
+  notes,
+  activeNoteId,
+  stringCount
+}: {
+  measure: number;
+  notes: ScoreModel["tracks"][number]["notes"];
+  activeNoteId?: string;
+  stringCount: number;
+}) {
+  const measureBeats = Math.max(4, ...notes.map((note) => note.beat + note.durationBeats - 1));
+  const xFor = (beat: number) => `${Math.max(7, Math.min(93, (beat / (measureBeats + 1)) * 100))}%`;
+  const staffTopFor = (midi: number) => `${Math.max(14, Math.min(86, 62 - (midi - 60) * 4))}%`;
+  const strings = Array.from({ length: stringCount }, (_, index) => index + 1);
+
+  return (
+    <section className="score-system">
+      <div className="system-label">{measure}마디</div>
+      <div className="notation-block">
+        <span className="notation-label">악보</span>
+        <div className="staff-lines">
+          {notes.map((note, index) => (
+            <span
+              className={`note-head ${activeNoteId === note.id ? "active" : ""}`}
+              key={`staff-${note.id}`}
+              style={{ left: xFor(note.beat), top: staffTopFor(note.midi), zIndex: index + 1 }}
+              title={midiToNoteName(note.midi)}
+            >
+              {midiToNoteName(note.midi)}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="notation-block tab-block">
+        <span className="notation-label">TAB</span>
+        <div className="tab-lines">
+          {strings.map((stringNumber, index) => (
+            <span
+              className="tab-line"
+              key={stringNumber}
+              data-string={stringNumber}
+              style={{ top: strings.length === 1 ? "50%" : `${(index / (strings.length - 1)) * 100}%` }}
+            />
+          ))}
+          {notes.map((note, index) => (
+            <span
+              className={`tab-fret ${activeNoteId === note.id ? "active" : ""}`}
+              key={`tab-${note.id}`}
+              style={{
+                left: xFor(note.beat),
+                zIndex: index + 1,
+                top: note.tab ? `${((note.tab.stringNumber - 1) / (strings.length - 1)) * 100}%` : "50%"
+              }}
+              title={note.tab ? `${note.tab.stringNumber}번줄 ${note.tab.fret}프렛` : "운지 없음"}
+            >
+              {note.tab ? note.tab.fret : "?"}
+            </span>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }

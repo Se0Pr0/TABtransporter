@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getInstrumentPreset } from "../../shared/instruments";
 import type { ScoreModel } from "../../shared/types";
 
 export function usePlayback(score: ScoreModel) {
@@ -26,7 +27,9 @@ export function usePlayback(score: ScoreModel) {
 
     const audio = context.current ?? new AudioContext();
     context.current = audio;
+    void audio.resume();
 
+    const preset = getInstrumentPreset(track.instrumentPresetId);
     const beatMs = 60_000 / score.tempo;
     setPlaying(true);
 
@@ -36,15 +39,24 @@ export function usePlayback(score: ScoreModel) {
 
       const timer = window.setTimeout(() => {
         setActiveNoteId(note.id);
-        const oscillator = audio.createOscillator();
+        const source = createPluckedString(audio, note.midi, durationMs / 1000, preset.type);
         const gain = audio.createGain();
-        oscillator.frequency.value = 440 * 2 ** ((note.midi - 69) / 12);
-        oscillator.type = "triangle";
-        gain.gain.value = 0.08;
-        oscillator.connect(gain);
+        const tone = audio.createBiquadFilter();
+        const body = audio.createBiquadFilter();
+
+        tone.type = "lowpass";
+        tone.frequency.value = preset.type === "bass" ? 1800 : 4200;
+        tone.Q.value = 0.7;
+        body.type = "peaking";
+        body.frequency.value = preset.type === "bass" ? 120 : 240;
+        body.Q.value = 1.2;
+        body.gain.value = preset.type === "bass" ? 5 : 3;
+        gain.gain.value = preset.type === "bass" ? 0.14 : 0.1;
+        source.connect(body);
+        body.connect(tone);
+        tone.connect(gain);
         gain.connect(audio.destination);
-        oscillator.start();
-        oscillator.stop(audio.currentTime + durationMs / 1000);
+        source.start();
       }, startMs);
       timers.current.push(timer);
     }
@@ -59,4 +71,38 @@ export function usePlayback(score: ScoreModel) {
   useEffect(() => stop, [stop]);
 
   return { playing, activeNoteId, play, stop };
+}
+
+function createPluckedString(
+  audio: AudioContext,
+  midi: number,
+  durationSeconds: number,
+  instrumentType: "guitar" | "bass"
+): AudioBufferSourceNode {
+  const frequency = 440 * 2 ** ((midi - 69) / 12);
+  const sampleRate = audio.sampleRate;
+  const length = Math.max(1, Math.floor(sampleRate * durationSeconds));
+  const period = Math.max(2, Math.floor(sampleRate / frequency));
+  const damping = instrumentType === "bass" ? 0.994 : 0.988;
+  const buffer = audio.createBuffer(1, length, sampleRate);
+  const data = buffer.getChannelData(0);
+
+  for (let i = 0; i < Math.min(period, length); i += 1) {
+    data[i] = Math.random() * 2 - 1;
+  }
+
+  for (let i = period; i < length; i += 1) {
+    const previous = data[i - period];
+    const next = data[i - period + 1] ?? previous;
+    data[i] = (previous + next) * 0.5 * damping;
+  }
+
+  for (let i = 0; i < length; i += 1) {
+    const envelope = 1 - i / length;
+    data[i] *= envelope * envelope;
+  }
+
+  const source = audio.createBufferSource();
+  source.buffer = buffer;
+  return source;
 }

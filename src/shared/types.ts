@@ -99,6 +99,7 @@ export interface ConversionResult {
 export interface ExportRequest {
   format: OutputFormat;
   defaultFileName: string;
+  html: string;
 }
 
 export interface ExportResult {

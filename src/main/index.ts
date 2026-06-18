@@ -88,16 +88,31 @@ function registerIpcHandlers(): void {
       return { status: "cancelled", message: "내보내기를 취소했습니다." };
     }
 
+    let exportWindow: BrowserWindow | undefined;
+
     try {
+      exportWindow = new BrowserWindow({
+        show: false,
+        width: 1200,
+        height: 1600,
+        backgroundColor: "#fffdf8",
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: false
+        }
+      });
+      await exportWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(request.html)}`);
+
       if (request.format === "pdf") {
-        const data = await mainWindow.webContents.printToPDF({
-          landscape: true,
+        const data = await exportWindow.webContents.printToPDF({
+          landscape: false,
           printBackground: true,
           pageSize: "A4"
         });
         await writeFile(result.filePath, data);
       } else {
-        const image = await mainWindow.webContents.capturePage();
+        const image = await exportWindow.webContents.capturePage();
         await writeFile(result.filePath, image.toPNG());
       }
 
@@ -107,6 +122,8 @@ function registerIpcHandlers(): void {
         status: "failed",
         message: error instanceof Error ? error.message : "알 수 없는 내보내기 오류입니다."
       };
+    } finally {
+      exportWindow?.close();
     }
   });
 }
