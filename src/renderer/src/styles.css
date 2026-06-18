@@ -52,6 +52,108 @@ button:disabled {
   display: grid;
   grid-template-columns: 260px minmax(620px, 1fr) 310px;
   background: #f4f1ec;
+  position: relative;
+}
+
+.app-shell.is-analyzing > :not(.analysis-overlay) {
+  filter: blur(3px);
+  pointer-events: none;
+  user-select: none;
+}
+
+.analysis-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgba(39, 36, 31, 0.36);
+  backdrop-filter: blur(2px);
+}
+
+.analysis-dialog {
+  width: min(460px, calc(100vw - 36px));
+  border: 1px solid #cfc7bb;
+  border-radius: 8px;
+  background: #fffdf8;
+  box-shadow: 0 22px 70px rgba(28, 26, 23, 0.28);
+  padding: 24px;
+  display: grid;
+  grid-template-columns: 64px 1fr auto;
+  gap: 16px;
+  align-items: center;
+}
+
+.analysis-spinner {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  border: 5px solid #d8d1c6;
+  border-top-color: #2f5f6d;
+  animation: spin 0.9s linear infinite;
+}
+
+.analysis-spinner.failed {
+  border-color: #b86b4b;
+  border-top-color: #7f3b22;
+  animation-duration: 1.4s;
+}
+
+.analysis-copy {
+  min-width: 0;
+}
+
+.analysis-phase {
+  display: inline-block;
+  margin-bottom: 5px;
+  color: #2f5f6d;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.analysis-copy h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+}
+
+.analysis-copy p,
+.analysis-copy small {
+  display: block;
+  margin: 0;
+  color: #625b52;
+  overflow-wrap: anywhere;
+}
+
+.analysis-copy small {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.analysis-percent {
+  align-self: start;
+  color: #2f5f6d;
+  font-size: 20px;
+}
+
+.analysis-meter {
+  grid-column: 1 / -1;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5ded4;
+}
+
+.analysis-meter div {
+  height: 100%;
+  border-radius: inherit;
+  background: #2f5f6d;
+  transition: width 220ms ease;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .sidebar,

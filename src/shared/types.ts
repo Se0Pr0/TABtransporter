@@ -98,6 +98,13 @@ export interface ConversionResult {
   diagnostics: string[];
 }
 
+export interface OmrProgress {
+  percent: number;
+  phase: "preparing" | "omr" | "parsing" | "done" | "failed";
+  message: string;
+  detail?: string;
+}
+
 export interface LogInfo {
   directory: string;
   appLogFile: string;

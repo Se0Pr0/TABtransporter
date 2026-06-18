@@ -78,7 +78,9 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("score:convert", async (_event, sourcePath: string) => {
     await writeAppLog("omr", "ipc convert requested", { sourcePath });
-    return convertWithLocalOmr(sourcePath);
+    return convertWithLocalOmr(sourcePath, (progress) => {
+      _event.sender.send("omr:progress", progress);
+    });
   });
 
   ipcMain.handle("audiveris:status", async () => {

@@ -23,6 +23,7 @@ import type {
   ConversionResult,
   FingeringWarning,
   LogInfo,
+  OmrProgress,
   OpenedScoreFile,
   ScoreModel,
   TransposeOptions
@@ -61,6 +62,11 @@ interface ConvertedMeta {
 }
 
 const EMPTY_SCORE = createEmptyScore();
+const INITIAL_PROGRESS: OmrProgress = {
+  percent: 0,
+  phase: "preparing",
+  message: "악보 분석을 준비하고 있습니다."
+};
 
 export function App() {
   const [openedFile, setOpenedFile] = useState<OpenedScoreFile | undefined>();
@@ -71,6 +77,8 @@ export function App() {
   const [audiveris, setAudiveris] = useState<AudiverisStatus | undefined>();
   const [logInfo, setLogInfo] = useState<LogInfo | undefined>();
   const [installingAudiveris, setInstallingAudiveris] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [omrProgress, setOmrProgress] = useState<OmrProgress>(INITIAL_PROGRESS);
   const [instrumentId, setInstrumentId] = useState(INSTRUMENT_PRESETS[0].id);
   const [semitones, setSemitones] = useState(0);
   const [capo, setCapo] = useState(0);
@@ -84,6 +92,10 @@ export function App() {
   useEffect(() => {
     void refreshAudiverisStatus();
     void refreshLogInfo();
+    return window.tabTransporter.onOmrProgress((progress) => {
+      setOmrProgress(progress);
+      setStatus(progress.message);
+    });
   }, []);
 
   async function refreshAudiverisStatus() {
@@ -122,6 +134,13 @@ export function App() {
     }
 
     setOpenedFile(file);
+    setIsAnalyzing(true);
+    setOmrProgress({
+      percent: 1,
+      phase: "preparing",
+      message: "PDF/이미지 파일을 열고 있습니다.",
+      detail: file.name
+    });
     setStatus(`${file.name} 파일을 열었습니다. 실제 악보 분석을 시작합니다.`);
     setConversion(undefined);
     setSourceScore(undefined);
@@ -129,16 +148,42 @@ export function App() {
     setConvertedMeta(undefined);
     setWarnings([]);
 
-    const result = await window.tabTransporter.convertScoreFile(file.path);
-    setConversion(result);
-    await refreshAudiverisStatus();
-    await refreshLogInfo();
-    if (result.score && result.score.tracks.some((track) => track.notes.length > 0)) {
-      setSourceScore(result.score);
-      setStatus("악보 분석이 끝났습니다. 조옮김 옵션을 고르고 변환하기를 누르세요.");
-      return;
+    try {
+      const result = await window.tabTransporter.convertScoreFile(file.path);
+      setConversion(result);
+      await refreshAudiverisStatus();
+      await refreshLogInfo();
+      if (result.score && result.score.tracks.some((track) => track.notes.length > 0)) {
+        setSourceScore(result.score);
+        setOmrProgress({
+          percent: 100,
+          phase: "done",
+          message: "악보 분석이 끝났습니다.",
+          detail: "조옮김 옵션을 고르고 변환하기를 누르세요."
+        });
+        setStatus("악보 분석이 끝났습니다. 조옮김 옵션을 고르고 변환하기를 누르세요.");
+        return;
+      }
+      setOmrProgress({
+        percent: 100,
+        phase: "failed",
+        message: result.message,
+        detail: result.logPath
+      });
+      setStatus(result.message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "악보 분석 중 알 수 없는 오류가 났습니다.";
+      setOmrProgress({
+        percent: 100,
+        phase: "failed",
+        message
+      });
+      setStatus(message);
+    } finally {
+      window.setTimeout(() => {
+        setIsAnalyzing(false);
+      }, 900);
     }
-    setStatus(result.message);
   }
 
   function convertScore() {
@@ -190,7 +235,7 @@ export function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${isAnalyzing ? "is-analyzing" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
           <FileMusic size={22} />
@@ -200,7 +245,7 @@ export function App() {
           </div>
         </div>
 
-        <button className="primary-action" onClick={openFile}>
+        <button className="primary-action" onClick={openFile} disabled={isAnalyzing}>
           <FolderOpen size={18} />
           PDF/이미지 열기
         </button>
@@ -241,10 +286,11 @@ export function App() {
           <h2>악기</h2>
           <div className="segmented">
             {INSTRUMENT_PRESETS.map((preset) => (
-              <button
+            <button
                 key={preset.id}
                 className={instrumentId === preset.id ? "selected" : ""}
                 onClick={() => setInstrumentId(preset.id)}
+                disabled={isAnalyzing}
               >
                 {preset.type === "guitar" ? "6현 기타" : "4현 베이스"}
               </button>
@@ -260,11 +306,11 @@ export function App() {
             <h1>{convertedScore?.title ?? sourceScore?.title ?? openedFile?.name ?? "악보 변환"}</h1>
           </div>
           <div className="toolbar-actions">
-            <button onClick={() => exportResult("pdf")} disabled={!convertedScore}>
+            <button onClick={() => exportResult("pdf")} disabled={!convertedScore || isAnalyzing}>
               <FileText size={17} />
               PDF 저장
             </button>
-            <button onClick={() => exportResult("png")} disabled={!convertedScore}>
+            <button onClick={() => exportResult("png")} disabled={!convertedScore || isAnalyzing}>
               <FileImage size={17} />
               PNG 저장
             </button>
@@ -294,11 +340,11 @@ export function App() {
         </div>
 
         <footer className="transport">
-          <button className="icon-action" onClick={playback.play} disabled={playback.playing || !convertedScore}>
+          <button className="icon-action" onClick={playback.play} disabled={playback.playing || !convertedScore || isAnalyzing}>
             <Play size={18} />
             재생
           </button>
-          <button className="icon-action" onClick={playback.stop} disabled={!playback.playing}>
+          <button className="icon-action" onClick={playback.stop} disabled={!playback.playing || isAnalyzing}>
             <Pause size={18} />
             정지
           </button>
@@ -315,7 +361,7 @@ export function App() {
 
           <label className="field">
             <span>조옮김</span>
-            <select value={semitones} onChange={(event) => setSemitones(Number(event.target.value))}>
+            <select value={semitones} onChange={(event) => setSemitones(Number(event.target.value))} disabled={isAnalyzing}>
               {KEY_OPTIONS.map((option) => (
                 <option key={option.label} value={option.semitones}>
                   {option.label}
@@ -326,15 +372,22 @@ export function App() {
 
           <label className="field">
             <span>카포</span>
-            <input min={0} max={12} type="number" value={capo} onChange={(event) => setCapo(Number(event.target.value))} />
+            <input
+              min={0}
+              max={12}
+              type="number"
+              value={capo}
+              onChange={(event) => setCapo(Number(event.target.value))}
+              disabled={isAnalyzing}
+            />
           </label>
 
-          <button className="convert-action" onClick={convertScore} disabled={!hasSourceNotes}>
+          <button className="convert-action" onClick={convertScore} disabled={!hasSourceNotes || isAnalyzing}>
             <Wand2 size={17} />
             변환하기
           </button>
 
-          <button className="secondary-action" onClick={() => setSemitones(0)}>
+          <button className="secondary-action" onClick={() => setSemitones(0)} disabled={isAnalyzing}>
             <RefreshCw size={16} />
             조옮김 초기화
           </button>
@@ -382,7 +435,7 @@ export function App() {
             로그
           </h2>
           <p className="path-text">{logInfo?.directory ?? "로그 위치 확인 중"}</p>
-          <button className="secondary-action" onClick={openLogFolder}>
+          <button className="secondary-action" onClick={openLogFolder} disabled={isAnalyzing}>
             <FolderOpen size={16} />
             로그 폴더 열기
           </button>
@@ -393,16 +446,17 @@ export function App() {
             <Save size={17} />
             결과 저장
           </h2>
-          <button className="secondary-action" onClick={() => exportResult("pdf")} disabled={!convertedScore}>
+          <button className="secondary-action" onClick={() => exportResult("pdf")} disabled={!convertedScore || isAnalyzing}>
             <Download size={16} />
             변환 결과 PDF 저장
           </button>
-          <button className="secondary-action" onClick={() => exportResult("png")} disabled={!convertedScore}>
+          <button className="secondary-action" onClick={() => exportResult("png")} disabled={!convertedScore || isAnalyzing}>
             <Download size={16} />
             변환 결과 PNG 저장
           </button>
         </section>
       </aside>
+      {isAnalyzing && <AnalysisOverlay progress={omrProgress} fileName={openedFile?.name} />}
     </main>
   );
 }
@@ -428,6 +482,35 @@ function PendingResult() {
     <div className="empty-preview">
       <Wand2 size={42} />
       <span>옵션을 고른 뒤 변환하기를 누르면 결과 악보가 여기에 나옵니다</span>
+    </div>
+  );
+}
+
+function AnalysisOverlay({ progress, fileName }: { progress: OmrProgress; fileName?: string }) {
+  const phaseLabel = {
+    preparing: "준비",
+    omr: "악보 분석",
+    parsing: "결과 정리",
+    done: "완료",
+    failed: "실패"
+  }[progress.phase];
+
+  return (
+    <div className="analysis-overlay" role="status" aria-live="polite">
+      <div className="analysis-dialog">
+        <div className={`analysis-spinner ${progress.phase === "failed" ? "failed" : ""}`} />
+        <div className="analysis-copy">
+          <span className="analysis-phase">{phaseLabel}</span>
+          <h2>악보 분석 중</h2>
+          <p>{progress.message}</p>
+          {fileName && <small>{fileName}</small>}
+          {progress.detail && <small>{progress.detail}</small>}
+        </div>
+        <div className="analysis-meter" aria-label={`분석 진행률 ${progress.percent}%`}>
+          <div style={{ width: `${progress.percent}%` }} />
+        </div>
+        <strong className="analysis-percent">{progress.percent}%</strong>
+      </div>
     </div>
   );
 }

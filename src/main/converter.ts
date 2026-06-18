@@ -2,13 +2,58 @@ import { copyFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { spawn } from "node:child_process";
-import type { ConversionResult } from "../shared/types";
+import type { ConversionResult, OmrProgress } from "../shared/types";
 import { noteNameToMidi } from "../shared/pitch";
 import type { NoteEvent, ScoreModel } from "../shared/types";
 import { resolveAudiverisPath } from "./audiveris";
 import { appendLogFile, createRunLogFile, readLogTail, tailLines, writeAppLog } from "./logger";
 
 const AUDIVERIS_TIMEOUT_MS = 180_000;
+const AUDIVERIS_STEPS = [
+  "LOAD",
+  "BINARY",
+  "SCALE",
+  "GRID",
+  "HEADERS",
+  "STEM_SEEDS",
+  "BEAMS",
+  "LEDGERS",
+  "HEADS",
+  "STEMS",
+  "REDUCTION",
+  "CUE_BEAMS",
+  "TEXTS",
+  "MEASURES",
+  "CHORDS",
+  "CURVES",
+  "SYMBOLS",
+  "LINKS",
+  "RHYTHMS",
+  "PAGE"
+];
+
+const AUDIVERIS_STEP_LABELS: Record<string, string> = {
+  LOAD: "이미지 불러오기",
+  BINARY: "흑백 변환",
+  SCALE: "오선 간격 계산",
+  GRID: "오선/마디 구조 찾기",
+  HEADERS: "조표/박자표 찾기",
+  STEM_SEEDS: "기둥 후보 찾기",
+  BEAMS: "빔 인식",
+  LEDGERS: "덧줄 인식",
+  HEADS: "음표 머리 인식",
+  STEMS: "음표 기둥 연결",
+  REDUCTION: "인식 충돌 정리",
+  CUE_BEAMS: "작은 음표 빔 확인",
+  TEXTS: "문자/OCR 확인",
+  MEASURES: "마디 분리",
+  CHORDS: "화음 묶기",
+  CURVES: "슬러/곡선 인식",
+  SYMBOLS: "악상 기호 인식",
+  LINKS: "기호 연결",
+  RHYTHMS: "리듬/박자 검증",
+  PAGE: "페이지 연결"
+};
 
 interface AudiverisRunResult {
   exitCode: number | null;
@@ -18,12 +63,18 @@ interface AudiverisRunResult {
   timedOut: boolean;
 }
 
-export async function convertWithLocalOmr(sourcePath: string): Promise<ConversionResult> {
+type ProgressSink = (progress: OmrProgress) => void;
+type ProgressReporter = (percent: number, phase: OmrProgress["phase"], message: string, detail?: string) => void;
+
+export async function convertWithLocalOmr(sourcePath: string, onProgress?: ProgressSink): Promise<ConversionResult> {
   const audiverisPath = resolveAudiverisPath();
   const diagnostics: string[] = [];
+  const progress = createProgressReporter(onProgress);
+  progress(2, "preparing", "악보 분석을 준비하고 있습니다.", sourcePath);
   await writeAppLog("omr", "conversion requested", { sourcePath });
 
   if (!audiverisPath) {
+    progress(100, "failed", "Audiveris 실행 파일을 찾지 못했습니다.");
     await writeAppLog("omr", "audiveris not found", { sourcePath });
     return {
       status: "needs_converter",
@@ -40,18 +91,21 @@ export async function convertWithLocalOmr(sourcePath: string): Promise<Conversio
   let logPath: string | undefined;
 
   try {
+    progress(6, "preparing", "원본 파일을 안전한 임시 이름으로 복사하고 있습니다.");
     const audiverisInputPath = await prepareAudiverisInput(sourcePath, workDir);
     diagnostics.push(`사용 중인 Audiveris 실행 파일: ${audiverisPath}`);
     diagnostics.push(`임시 작업 폴더: ${workDir}`);
     diagnostics.push(`Audiveris 입력 복사본: ${audiverisInputPath}`);
 
-    const run = await runAudiveris(audiverisPath, audiverisInputPath, workDir, sourcePath);
+    progress(10, "omr", "Audiveris 분석을 시작합니다.", basename(sourcePath));
+    const run = await runAudiveris(audiverisPath, audiverisInputPath, workDir, sourcePath, progress);
     logPath = run.logPath;
     const importantLines = extractImportantAudiverisLines(`${run.stdout}\n${run.stderr}`);
     diagnostics.push(`Audiveris 로그 파일: ${run.logPath}`);
 
     if (run.exitCode !== 0) {
       const message = summarizeAudiverisFailure(run);
+      progress(100, "failed", message, run.logPath);
       await writeAppLog("omr", "audiveris failed", { sourcePath, exitCode: run.exitCode, logPath: run.logPath, message });
       return {
         status: "failed",
@@ -66,6 +120,7 @@ export async function convertWithLocalOmr(sourcePath: string): Promise<Conversio
     const output = await findMusicXml(workDir);
 
     if (!output) {
+      progress(100, "failed", "Audiveris 실행은 끝났지만 MusicXML 결과 파일을 찾지 못했습니다.", logPath);
       await writeAppLog("omr", "musicxml output not found", { sourcePath, logPath });
       return {
         status: "failed",
@@ -77,10 +132,13 @@ export async function convertWithLocalOmr(sourcePath: string): Promise<Conversio
       };
     }
 
+    progress(88, "parsing", "MusicXML 결과를 읽고 있습니다.", output);
     const musicXml = await readMusicXmlExport(output, workDir);
+    progress(94, "parsing", "음표 데이터를 앱 내부 악보 모델로 바꾸고 있습니다.");
     const score = parseMusicXmlToScore(musicXml, basename(sourcePath));
 
     if (!score.tracks.some((track) => track.notes.length > 0)) {
+      progress(100, "failed", "MusicXML은 생성됐지만 인식된 음표가 없습니다.", output);
       await writeAppLog("omr", "musicxml contained no notes", { sourcePath, output, logPath });
       return {
         status: "failed",
@@ -99,6 +157,7 @@ export async function convertWithLocalOmr(sourcePath: string): Promise<Conversio
       notes: score.tracks.reduce((sum, track) => sum + track.notes.length, 0),
       logPath
     });
+    progress(100, "done", "악보 분석이 끝났습니다.", `${score.tracks.reduce((sum, track) => sum + track.notes.length, 0)}개 음표`);
     return {
       status: "converted",
       sourcePath,
@@ -111,6 +170,7 @@ export async function convertWithLocalOmr(sourcePath: string): Promise<Conversio
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "알 수 없는 OMR 변환 오류입니다.";
+    progress(100, "failed", message, logPath);
     await writeAppLog("omr", "conversion threw", { sourcePath, message, logPath });
     return {
       status: "failed",
@@ -139,7 +199,8 @@ async function runAudiveris(
   audiverisPath: string,
   sourcePath: string,
   outputDir: string,
-  originalSourcePath: string
+  originalSourcePath: string,
+  progress: ProgressReporter
 ): Promise<AudiverisRunResult> {
   const args = ["-batch", "-export", "-output", outputDir, sourcePath];
   const logPath = await createRunLogFile("omr", basename(originalSourcePath));
@@ -179,12 +240,14 @@ async function runAudiveris(
       const text = chunk.toString("utf8");
       stdout += text;
       writeRunLog(text);
+      reportAudiverisProgress(text, progress);
     });
 
     child.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       stderr += text;
       writeRunLog(text);
+      reportAudiverisProgress(text, progress);
     });
 
     child.on("error", (error) => {
@@ -200,6 +263,63 @@ async function runAudiveris(
       });
     });
   });
+}
+
+function createProgressReporter(onProgress?: ProgressSink): ProgressReporter {
+  let lastPercent = 0;
+  let lastMessage = "";
+  return (percentInput, phase, message, detail) => {
+    const percent = Math.max(lastPercent, Math.min(100, Math.round(percentInput)));
+    const next = { percent, phase, message, detail };
+    if (percent === lastPercent && message === lastMessage) {
+      return;
+    }
+    lastPercent = percent;
+    lastMessage = message;
+    onProgress?.(next);
+  };
+}
+
+function reportAudiverisProgress(text: string, progress: ProgressReporter): void {
+  for (const line of text.split(/\r?\n/)) {
+    const stepMatch = /StepMonitoring\s+\d+\s+\|\s+([A-Z_]+)/.exec(line);
+    if (stepMatch) {
+      const step = stepMatch[1];
+      progress(stepPercent(step), "omr", `${stepLabel(step)} 단계 처리 중`, compactLogLine(line));
+      continue;
+    }
+
+    const sheetMatch = /\[([^\]]+#\d+)\]/.exec(line);
+    if (sheetMatch && /Loaded image|Book stored|End of Stub/.test(line)) {
+      progress(18, "omr", `${sheetMatch[1]} 페이지를 분석하고 있습니다.`, compactLogLine(line));
+      continue;
+    }
+
+    if (/Exporting sheet|exported to/i.test(line)) {
+      progress(84, "omr", "MusicXML로 내보내고 있습니다.", compactLogLine(line));
+      continue;
+    }
+
+    if (/Could not export|Exception|Exit forced|No target duration|please check time signatures/i.test(line)) {
+      progress(98, "omr", "Audiveris가 오류를 보고했습니다.", compactLogLine(line));
+    }
+  }
+}
+
+function stepPercent(step: string): number {
+  const index = AUDIVERIS_STEPS.indexOf(step);
+  if (index < 0) {
+    return 20;
+  }
+  return 14 + Math.round((index / Math.max(1, AUDIVERIS_STEPS.length - 1)) * 66);
+}
+
+function stepLabel(step: string): string {
+  return AUDIVERIS_STEP_LABELS[step] ?? step;
+}
+
+function compactLogLine(line: string): string {
+  return line.replace(/\s+/g, " ").trim();
 }
 
 function summarizeAudiverisFailure(run: AudiverisRunResult): string {
