@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage } from "electron";
+import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { readFile, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import type { ExportRequest, ExportResult, OpenedScoreFile } from "../shared/types";
@@ -51,12 +51,12 @@ app.on("window-all-closed", () => {
 function registerIpcHandlers(): void {
   ipcMain.handle("score:open", async (): Promise<OpenedScoreFile | undefined> => {
     const result = await dialog.showOpenDialog(mainWindow!, {
-      title: "Open score PDF or image",
+      title: "악보 PDF 또는 이미지 열기",
       properties: ["openFile"],
       filters: [
-        { name: "PDF and Images", extensions: ["pdf", "png", "jpg", "jpeg", "webp", "bmp"] },
+        { name: "PDF 및 이미지", extensions: ["pdf", "png", "jpg", "jpeg", "webp", "bmp"] },
         { name: "PDF", extensions: ["pdf"] },
-        { name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "bmp"] }
+        { name: "이미지", extensions: ["png", "jpg", "jpeg", "webp", "bmp"] }
       ]
     });
 
@@ -73,18 +73,18 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("export:save", async (_event, request: ExportRequest): Promise<ExportResult> => {
     if (!mainWindow) {
-      return { status: "failed", message: "No active window to export." };
+      return { status: "failed", message: "내보낼 활성 창이 없습니다." };
     }
 
     const extension = request.format === "pdf" ? "pdf" : "png";
     const result = await dialog.showSaveDialog(mainWindow, {
-      title: `Export ${request.format.toUpperCase()}`,
+      title: `${request.format.toUpperCase()}로 내보내기`,
       defaultPath: join(app.getPath("desktop"), ensureExtension(request.defaultFileName, extension)),
       filters: [{ name: request.format.toUpperCase(), extensions: [extension] }]
     });
 
     if (result.canceled || !result.filePath) {
-      return { status: "cancelled", message: "Export cancelled." };
+      return { status: "cancelled", message: "내보내기를 취소했습니다." };
     }
 
     try {
@@ -100,11 +100,11 @@ function registerIpcHandlers(): void {
         await writeFile(result.filePath, image.toPNG());
       }
 
-      return { status: "saved", path: result.filePath, message: `Saved ${result.filePath}` };
+      return { status: "saved", path: result.filePath, message: `${result.filePath}에 저장했습니다.` };
     } catch (error) {
       return {
         status: "failed",
-        message: error instanceof Error ? error.message : "Unknown export failure."
+        message: error instanceof Error ? error.message : "알 수 없는 내보내기 오류입니다."
       };
     }
   });
@@ -117,7 +117,7 @@ async function readScoreFile(path: string): Promise<OpenedScoreFile> {
 
   return {
     path,
-    name: path.split(/[\\/]/).pop() ?? "score",
+    name: path.split(/[\\/]/).pop() ?? "악보",
     kind: extension === ".pdf" ? "pdf" : "image",
     dataUrl: `data:${mime};base64,${data.toString("base64")}`
   };

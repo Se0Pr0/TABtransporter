@@ -2,7 +2,7 @@ import type { InstrumentPreset } from "./types";
 
 export const GUITAR_STANDARD_6: InstrumentPreset = {
   id: "guitar-standard-6",
-  name: "6-string guitar standard",
+  name: "6현 기타 표준 튜닝",
   type: "guitar",
   stringCount: 6,
   fretCount: 22,
@@ -19,7 +19,7 @@ export const GUITAR_STANDARD_6: InstrumentPreset = {
 
 export const BASS_STANDARD_4: InstrumentPreset = {
   id: "bass-standard-4",
-  name: "4-string bass standard",
+  name: "4현 베이스 표준 튜닝",
   type: "bass",
   stringCount: 4,
   fretCount: 24,

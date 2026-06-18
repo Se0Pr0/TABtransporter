@@ -16,11 +16,11 @@ export async function convertWithLocalOmr(sourcePath: string): Promise<Conversio
     return {
       status: "needs_converter",
       sourcePath,
-      message: "No local Audiveris executable was found. The app kept a clearly marked demo score so the workflow can be tested.",
+      message: "로컬 Audiveris 실행 파일을 찾지 못했습니다. 흐름을 확인할 수 있도록 예제 악보를 표시했습니다.",
       score: createDemoScore(),
       diagnostics: [
-        "Set AUDIVERIS_BIN to an Audiveris executable or install a supported local converter.",
-        "No OMR result was treated as final score data."
+        "AUDIVERIS_BIN 환경 변수를 Audiveris 실행 파일로 지정하거나 지원되는 로컬 변환기를 설치하세요.",
+        "현재 표시된 예제는 실제 OMR 변환 결과가 아닙니다."
       ]
     };
   }
@@ -28,8 +28,8 @@ export async function convertWithLocalOmr(sourcePath: string): Promise<Conversio
   const workDir = await mkdtemp(join(tmpdir(), "tabtransporter-omr-"));
 
   try {
-    diagnostics.push(`Using Audiveris executable: ${audiverisPath}`);
-    diagnostics.push(`Working directory: ${workDir}`);
+    diagnostics.push(`사용 중인 Audiveris 실행 파일: ${audiverisPath}`);
+    diagnostics.push(`임시 작업 폴더: ${workDir}`);
 
     await runAudiveris(audiverisPath, sourcePath, workDir);
     const output = await findMusicXml(workDir);
@@ -38,7 +38,7 @@ export async function convertWithLocalOmr(sourcePath: string): Promise<Conversio
       return {
         status: "failed",
         sourcePath,
-        message: "Audiveris finished but no MusicXML output was found.",
+        message: "Audiveris 실행은 끝났지만 MusicXML 결과 파일을 찾지 못했습니다.",
         diagnostics
       };
     }
@@ -47,14 +47,14 @@ export async function convertWithLocalOmr(sourcePath: string): Promise<Conversio
       status: "converted",
       sourcePath,
       musicXmlPath: output,
-      message: `Converted ${basename(sourcePath)} to MusicXML.`,
+      message: `${basename(sourcePath)} 파일을 MusicXML로 변환했습니다.`,
       diagnostics
     };
   } catch (error) {
     return {
       status: "failed",
       sourcePath,
-      message: error instanceof Error ? error.message : "Unknown OMR failure.",
+      message: error instanceof Error ? error.message : "알 수 없는 OMR 변환 오류입니다.",
       diagnostics
     };
   } finally {
@@ -92,7 +92,7 @@ function runAudiveris(audiverisPath: string, sourcePath: string, outputDir: stri
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error("Audiveris conversion timed out."));
+      reject(new Error("Audiveris 변환 시간이 초과되었습니다."));
     }, AUDIVERIS_TIMEOUT_MS);
 
     child.stderr.on("data", (chunk: Buffer) => {
@@ -110,7 +110,7 @@ function runAudiveris(audiverisPath: string, sourcePath: string, outputDir: stri
         resolve();
         return;
       }
-      reject(new Error(stderr.trim() || `Audiveris exited with code ${code}.`));
+      reject(new Error(stderr.trim() || `Audiveris가 코드 ${code}로 종료되었습니다.`));
     });
   });
 }

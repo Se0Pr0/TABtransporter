@@ -3,13 +3,13 @@ import type { ScoreModel } from "./types";
 export function createDemoScore(instrumentPresetId = "guitar-standard-6"): ScoreModel {
   return {
     id: "demo-score",
-    title: "Conversion Preview",
+    title: "변환 미리보기",
     tempo: 92,
     timeSignature: [4, 4],
     tracks: [
       {
         id: "track-1",
-        name: "Main TAB",
+        name: "기본 TAB",
         instrumentPresetId,
         notes: [
           { id: "n1", measure: 1, beat: 1, durationBeats: 1, midi: 52, source: "demo", confidence: 0.7 },

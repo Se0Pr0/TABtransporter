@@ -1,7 +1,7 @@
 {
   "name": "tabtransporter",
   "version": "0.1.0",
-  "description": "Desktop tool for PDF/image score transposition and guitar/bass TAB fingering remap.",
+  "description": "PDF/이미지 악보를 조옮김하고 기타/베이스 TAB 운지를 다시 잡는 데스크톱 앱.",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",

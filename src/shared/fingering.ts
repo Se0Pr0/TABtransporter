@@ -45,7 +45,7 @@ export function generateFingeringCandidates(
 
     if (fret === 0) {
       score += preset.type === "guitar" ? 8 : 3;
-      reasons.push("open string");
+      reasons.push("개방현");
     }
 
     if (previous?.tab) {
@@ -55,16 +55,16 @@ export function generateFingeringCandidates(
       score -= fretDistance * 2;
 
       if (fretDistance > 7) {
-        reasons.push("large position jump");
+        reasons.push("포지션 이동이 큼");
       }
       if (stringDistance > 2) {
-        reasons.push("wide string movement");
+        reasons.push("줄 이동이 큼");
       }
     }
 
     if (physicalFret > 12) {
       score -= (physicalFret - 12) * 3;
-      reasons.push("high fret");
+      reasons.push("높은 프렛");
     }
 
     candidates.push({
@@ -106,7 +106,7 @@ export function transposeAndRemap(score: ScoreModel, options: TransposeOptions):
           noteId: note.id,
           measure: note.measure,
           severity: "error",
-          message: `No playable ${preset.name} position for MIDI ${note.midi}.`
+          message: `${preset.name}에서 MIDI ${note.midi} 음을 칠 수 있는 위치가 없습니다.`
         });
         previous = note;
         continue;
@@ -119,12 +119,12 @@ export function transposeAndRemap(score: ScoreModel, options: TransposeOptions):
       };
 
       for (const reason of candidate.reasons) {
-        if (reason === "large position jump" || reason === "high fret") {
+        if (reason === "포지션 이동이 큼" || reason === "높은 프렛") {
           warnings.push({
             noteId: note.id,
             measure: note.measure,
             severity: "warning",
-            message: `${reason} on string ${candidate.stringNumber}, fret ${candidate.fret}.`
+            message: `${reason}: ${candidate.stringNumber}번줄 ${candidate.fret}프렛`
           });
         }
       }
