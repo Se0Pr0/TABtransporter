@@ -364,6 +364,69 @@ button:disabled {
   color: #8a8176;
 }
 
+.layout-preview {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+  background: #f2eee7;
+}
+
+.layout-stage {
+  position: relative;
+  min-height: 100%;
+  background: #ffffff;
+  border: 1px solid #d8d1c6;
+}
+
+.layout-source {
+  display: block;
+  width: 100%;
+  min-height: 100%;
+  border: 0;
+  object-fit: contain;
+  background: #ffffff;
+}
+
+.layout-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.layout-mark {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 30px;
+  min-height: 18px;
+  padding: 2px 5px;
+  border: 1px solid #2f5f6d;
+  border-radius: 999px;
+  background: rgba(255, 253, 249, 0.92);
+  color: #263f47;
+  box-shadow: 0 1px 4px rgba(31, 29, 26, 0.16);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.layout-mark b {
+  font-size: 11px;
+}
+
+.layout-mark small {
+  border-left: 1px solid #b8c9cc;
+  padding-left: 3px;
+  font-size: 10px;
+  color: #335b66;
+}
+
+.layout-mark.active {
+  outline: 2px solid #244d58;
+  background: #e8f1ef;
+}
+
 .tab-preview {
   padding: 18px;
   overflow: auto;

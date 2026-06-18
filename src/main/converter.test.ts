@@ -71,6 +71,7 @@ describe("MusicXML OMR parsing", () => {
     expect(notes).toHaveLength(2);
     expect(notes.map((note) => note.midi)).toEqual([71, 69]);
     expect(notes.map((note) => note.beat)).toEqual([1, 2]);
+    expect(notes[0].originalSource).toEqual({ page: 1, x: 10, y: 20, width: 6, height: 6, staff: 1 });
     expect(notes.every((note) => note.confidence !== undefined && note.confidence <= 0.55)).toBe(true);
   });
 });

@@ -4,7 +4,7 @@ import { basename, extname, join } from "node:path";
 import { spawn } from "node:child_process";
 import type { ConversionResult, OmrProgress } from "../shared/types";
 import { noteNameToMidi } from "../shared/pitch";
-import type { NoteEvent, ScoreModel } from "../shared/types";
+import type { NoteEvent, ScoreModel, SourceBounds } from "../shared/types";
 import { resolveAudiverisPath } from "./audiveris";
 import { appendLogFile, createRunLogFile, readLogTail, tailLines, writeAppLog } from "./logger";
 
@@ -74,6 +74,8 @@ interface AudiverisHeadCandidate {
   staff: number;
   x: number;
   y: number;
+  width: number;
+  height: number;
   midi: number;
   confidence: number;
 }
@@ -209,6 +211,7 @@ export async function convertWithLocalOmr(sourcePath: string, onProgress?: Progr
     const musicXml = await readMusicXmlExport(output, workDir);
     progress(94, "parsing", "음표 데이터를 앱 내부 악보 모델로 바꾸고 있습니다.");
     const score = parseMusicXmlToScore(musicXml, basename(sourcePath));
+    await attachAudiverisLayoutFromOmr(workDir, score, diagnostics);
 
     if (!score.tracks.some((track) => track.notes.length > 0)) {
       progress(100, "failed", "MusicXML은 생성됐지만 인식된 음표가 없습니다.", output);
@@ -313,6 +316,34 @@ async function buildFallbackScoreFromOmr(
   };
 }
 
+async function attachAudiverisLayoutFromOmr(
+  workDir: string,
+  score: ScoreModel,
+  diagnostics: string[]
+): Promise<void> {
+  const fallback = await buildFallbackScoreFromOmr(workDir, score.title, diagnostics);
+  if (!fallback) {
+    diagnostics.push("정식 변환은 성공했지만 원본 좌표 데이터를 찾지 못했습니다.");
+    return;
+  }
+
+  const layoutNotes = fallback.score.tracks.flatMap((track) => track.notes).filter(hasOriginalSource);
+  const scoreNotes = score.tracks.flatMap((track) => track.notes);
+  const count = Math.min(scoreNotes.length, layoutNotes.length);
+  for (let index = 0; index < count; index += 1) {
+    scoreNotes[index].originalSource = { ...layoutNotes[index].originalSource };
+  }
+
+  diagnostics.push(`원본 레이아웃 좌표 연결: ${count}/${scoreNotes.length}개 음표`);
+  if (layoutNotes.length !== scoreNotes.length) {
+    diagnostics.push(`주의: MusicXML 음표 수(${scoreNotes.length})와 Audiveris 좌표 수(${layoutNotes.length})가 달라 순서 기준으로 가능한 만큼만 연결했습니다.`);
+  }
+}
+
+function hasOriginalSource(note: NoteEvent): note is NoteEvent & { originalSource: SourceBounds } {
+  return Boolean(note.originalSource);
+}
+
 async function findOmrFile(directory: string): Promise<string | undefined> {
   const entries = await readdir(directory, { withFileTypes: true });
 
@@ -389,7 +420,9 @@ export function parseAudiverisSheetHeadsToNotes(
 
     const x = Number.parseFloat(boundsMatch[1]);
     const y = Number.parseFloat(boundsMatch[2]);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    const width = Number.parseFloat(boundsMatch[3]);
+    const height = Number.parseFloat(boundsMatch[4]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)) {
       continue;
     }
 
@@ -410,6 +443,8 @@ export function parseAudiverisSheetHeadsToNotes(
       staff,
       x,
       y,
+      width,
+      height,
       midi,
       confidence
     });
@@ -441,7 +476,15 @@ export function parseAudiverisSheetHeadsToNotes(
       durationBeats: 1,
       midi: head.midi,
       source: "omr",
-      confidence: head.confidence
+      confidence: head.confidence,
+      originalSource: {
+        page: head.sheetNumber,
+        x: head.x,
+        y: head.y,
+        width: head.width,
+        height: head.height,
+        staff: head.staff
+      }
     });
 
     previous = head;

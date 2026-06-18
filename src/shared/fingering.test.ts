@@ -47,6 +47,23 @@ describe("transpose and remap", () => {
     expect(result.score.tracks[0].notes.every((note) => note.tab)).toBe(true);
   });
 
+  it("preserves original source coordinates after transpose", () => {
+    const result = transposeAndRemap(createTestScore(), {
+      semitones: 2,
+      capo: 0,
+      instrumentPresetId: GUITAR_STANDARD_6.id
+    });
+
+    expect(result.score.tracks[0].notes[0].originalSource).toEqual({
+      page: 1,
+      x: 120,
+      y: 240,
+      width: 10,
+      height: 8,
+      staff: 1
+    });
+  });
+
   it("avoids assigning the same string to simultaneous notes", () => {
     const result = transposeAndRemap(createChordScore(), {
       semitones: 0,
@@ -72,7 +89,14 @@ function createTestScore(): ScoreModel {
         name: "테스트 트랙",
         instrumentPresetId: GUITAR_STANDARD_6.id,
         notes: [
-          { id: "n1", measure: 1, beat: 1, durationBeats: 1, midi: 52 },
+          {
+            id: "n1",
+            measure: 1,
+            beat: 1,
+            durationBeats: 1,
+            midi: 52,
+            originalSource: { page: 1, x: 120, y: 240, width: 10, height: 8, staff: 1 }
+          },
           { id: "n2", measure: 1, beat: 2, durationBeats: 1, midi: 55 },
           { id: "n3", measure: 1, beat: 3, durationBeats: 1, midi: 59 },
           { id: "n4", measure: 1, beat: 4, durationBeats: 1, midi: 64 }

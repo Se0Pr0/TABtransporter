@@ -26,6 +26,15 @@ export interface TabPosition {
   physicalFret: number;
 }
 
+export interface SourceBounds {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  staff?: number;
+}
+
 export interface NoteEvent {
   id: string;
   measure: number;
@@ -36,6 +45,7 @@ export interface NoteEvent {
   tab?: TabPosition;
   source?: "omr" | "manual" | "demo";
   confidence?: number;
+  originalSource?: SourceBounds;
 }
 
 export interface ScoreTrack {

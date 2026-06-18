@@ -320,7 +320,11 @@ export function App() {
               <small>변환하기를 누른 뒤 저장됩니다</small>
             </div>
             {convertedScore ? (
-              <TabPreview score={convertedScore} activeNoteId={playback.activeNoteId} />
+              hasOriginalLayout(convertedScore) && openedFile ? (
+                <LayoutPreview file={openedFile} score={convertedScore} activeNoteId={playback.activeNoteId} />
+              ) : (
+                <TabPreview score={convertedScore} activeNoteId={playback.activeNoteId} />
+              )
             ) : (
               <PendingResult />
             )}
@@ -498,6 +502,59 @@ function AnalysisOverlay({ progress, fileName }: { progress: OmrProgress; fileNa
           <div style={{ width: `${progress.percent}%` }} />
         </div>
         <strong className="analysis-percent">{progress.percent}%</strong>
+      </div>
+    </div>
+  );
+}
+
+function hasOriginalLayout(score: ScoreModel): boolean {
+  return score.tracks.some((track) => track.notes.some((note) => note.originalSource));
+}
+
+function LayoutPreview({
+  file,
+  score,
+  activeNoteId
+}: {
+  file: OpenedScoreFile;
+  score: ScoreModel;
+  activeNoteId?: string;
+}) {
+  const notes = score.tracks.flatMap((track) => track.notes).filter((note) => note.originalSource?.page === 1);
+  if (!notes.length) {
+    return <TabPreview score={score} activeNoteId={activeNoteId} />;
+  }
+
+  const maxX = Math.max(...notes.map((note) => (note.originalSource?.x ?? 0) + (note.originalSource?.width ?? 0)), 1);
+  const maxY = Math.max(...notes.map((note) => (note.originalSource?.y ?? 0) + (note.originalSource?.height ?? 0)), 1);
+
+  return (
+    <div className="layout-preview" aria-label="원본 위치 기준 변환 미리보기">
+      <div className="layout-stage">
+        {file.kind === "pdf" ? (
+          <object className="layout-source" data={file.dataUrl} type="application/pdf" aria-label="원본 PDF" />
+        ) : (
+          <img className="layout-source" src={file.dataUrl} alt="원본 악보" />
+        )}
+        <div className="layout-overlay">
+          {notes.map((note) => {
+            const source = note.originalSource!;
+            return (
+              <span
+                className={`layout-mark ${activeNoteId === note.id ? "active" : ""}`}
+                key={note.id}
+                style={{
+                  left: `${(source.x / maxX) * 100}%`,
+                  top: `${(source.y / maxY) * 100}%`
+                }}
+                title={`${midiToNoteName(note.midi)}${note.tab ? ` / ${note.tab.stringNumber}번줄 ${note.tab.fret}프렛` : ""}`}
+              >
+                <b>{midiToNoteName(note.midi)}</b>
+                {note.tab && <small>{note.tab.fret}</small>}
+              </span>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
