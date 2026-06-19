@@ -4,7 +4,7 @@ import { basename, extname, join } from "node:path";
 import { spawn } from "node:child_process";
 import type { ConversionResult, OmrProgress, ScoreLayoutPage } from "../shared/types";
 import { noteNameToMidi } from "../shared/pitch";
-import type { NoteEvent, ScoreModel, SourceBounds } from "../shared/types";
+import type { ChordSymbol, NoteEvent, ScoreModel, SourceBounds } from "../shared/types";
 import { resolveAudiverisPath } from "./audiveris";
 import { appendLogFile, createRunLogFile, readLogTail, tailLines, writeAppLog } from "./logger";
 
@@ -663,8 +663,10 @@ function renderPdfPageBand(
 
 function mergeScoreParts(parts: ScoreModel[], title: string, layoutPages?: ScoreLayoutPage[]): ScoreModel {
   const notes: NoteEvent[] = [];
+  const chords: ChordSymbol[] = [];
   let measureOffset = 0;
   let noteIndex = 1;
+  let chordIndex = 1;
 
   for (const part of parts) {
     const partNotes = part.tracks.flatMap((track) => track.notes);
@@ -673,13 +675,23 @@ function mergeScoreParts(parts: ScoreModel[], title: string, layoutPages?: Score
     }
     const minMeasure = Math.min(...partNotes.map((note) => note.measure));
     const maxMeasure = Math.max(...partNotes.map((note) => note.measure));
+    const partChords = part.tracks.flatMap((track) => track.chords ?? []);
     for (const note of partNotes) {
       notes.push({
         ...note,
         id: `segmented-${noteIndex++}`,
         measure: measureOffset + (note.measure - minMeasure + 1),
         tab: note.tab ? { ...note.tab } : undefined,
+        originalTab: note.originalTab ? { ...note.originalTab } : undefined,
         originalSource: note.originalSource ? { ...note.originalSource } : undefined
+      });
+    }
+    for (const chord of partChords) {
+      chords.push({
+        ...chord,
+        id: `segmented-chord-${chordIndex++}`,
+        measure: measureOffset + (chord.measure - minMeasure + 1),
+        originalSource: chord.originalSource ? { ...chord.originalSource } : undefined
       });
     }
     measureOffset += Math.max(1, maxMeasure - minMeasure + 1);
@@ -696,7 +708,8 @@ function mergeScoreParts(parts: ScoreModel[], title: string, layoutPages?: Score
         id: "segmented-omr-track-1",
         name: "페이지별 OMR 악보",
         instrumentPresetId: "guitar-standard-6",
-        notes
+        notes,
+        chords
       }
     ]
   };
@@ -709,20 +722,33 @@ function scoreToMusicXml(score: ScoreModel): string {
     notes.push(note);
     notesByMeasure.set(note.measure, notes);
   }
+  const chordsByMeasure = new Map<number, ChordSymbol[]>();
+  for (const chord of score.tracks.flatMap((track) => track.chords ?? [])) {
+    const chords = chordsByMeasure.get(chord.measure) ?? [];
+    chords.push(chord);
+    chordsByMeasure.set(chord.measure, chords);
+  }
 
   const measures = Array.from(notesByMeasure.entries())
     .sort(([a], [b]) => a - b)
     .map(([measure, notes]) => {
-      const body = notes
-        .sort((a, b) => a.beat - b.beat || a.midi - b.midi)
-        .map((note) => {
-          const pitch = midiToMusicXmlPitch(note.midi);
+      const chords = chordsByMeasure.get(measure) ?? [];
+      const body = [
+        ...chords.map((chord) => ({ kind: "chord" as const, beat: chord.beat, chord })),
+        ...notes.map((note) => ({ kind: "note" as const, beat: note.beat, note }))
+      ]
+        .sort((a, b) => a.beat - b.beat || (a.kind === "chord" ? -1 : 1))
+        .map((event) => {
+          if (event.kind === "chord") {
+            return chordToMusicXml(event.chord);
+          }
+          const pitch = midiToMusicXmlPitch(event.note.midi);
           return `      <note>
         <pitch>
           <step>${pitch.step}</step>${pitch.alter ? `\n          <alter>${pitch.alter}</alter>` : ""}
           <octave>${pitch.octave}</octave>
         </pitch>
-        <duration>${Math.max(1, Math.round(note.durationBeats))}</duration>
+        <duration>${Math.max(1, Math.round(event.note.durationBeats))}</duration>
         <type>quarter</type>
       </note>`;
         })
@@ -760,6 +786,61 @@ ${attributes}${body}
 ${measures}
   </part>
 </score-partwise>`;
+}
+
+function chordToMusicXml(chord: ChordSymbol): string {
+  const match = /^([A-G])([#b]*)(.*?)(?:\/([A-G])([#b]*))?$/.exec(chord.text.trim());
+  if (!match) {
+    return `      <direction placement="above">
+        <direction-type>
+          <words>${escapeXml(chord.text)}</words>
+        </direction-type>
+      </direction>`;
+  }
+
+  const [, rootStep, rootAccidental, suffix, bassStep, bassAccidental] = match;
+  const kind = chordSuffixToMusicXmlKind(suffix);
+  const bass =
+    bassStep !== undefined
+      ? `
+        <bass>
+          <bass-step>${bassStep}</bass-step>${accidentalToAlterXml(bassAccidental, "bass-alter")}
+        </bass>`
+      : "";
+
+  return `      <harmony>
+        <root>
+          <root-step>${rootStep}</root-step>${accidentalToAlterXml(rootAccidental, "root-alter")}
+        </root>
+        <kind text="${escapeXml(suffix)}">${kind}</kind>${bass}
+      </harmony>`;
+}
+
+function chordSuffixToMusicXmlKind(suffix: string): string {
+  const normalized = suffix.trim();
+  const map: Record<string, string> = {
+    "": "major",
+    m: "minor",
+    "7": "dominant",
+    maj7: "major-seventh",
+    m7: "minor-seventh",
+    dim: "diminished",
+    dim7: "diminished-seventh",
+    aug: "augmented",
+    sus2: "suspended-second",
+    sus4: "suspended-fourth",
+    "6": "major-sixth",
+    m6: "minor-sixth",
+    "9": "dominant-ninth",
+    maj9: "major-ninth",
+    m9: "minor-ninth"
+  };
+  return map[normalized] ?? "major";
+}
+
+function accidentalToAlterXml(accidental: string, tagName: string): string {
+  const alter = [...accidental].reduce((sum, char) => sum + (char === "#" ? 1 : char === "b" ? -1 : 0), 0);
+  return alter ? `\n          <${tagName}>${alter}</${tagName}>` : "";
 }
 
 function midiToMusicXmlPitch(midi: number): { step: string; alter: number; octave: number } {
@@ -1373,9 +1454,11 @@ async function findExtractedMusicXml(directory: string): Promise<string | undefi
 
 export function parseMusicXmlToScore(musicXml: string, title = "변환된 악보"): ScoreModel {
   const notes: NoteEvent[] = [];
+  const chords: ChordSymbol[] = [];
   const measureRegex = /<measure\b([^>]*)>([\s\S]*?)<\/measure>/gi;
   let measureMatch: RegExpExecArray | null;
   let noteIndex = 1;
+  let chordIndex = 1;
   let divisions = 1;
   const timeSignature = parseTimeSignature(musicXml);
   const parsedTitle = parseTextElement(musicXml, "movement-title") ?? parseTextElement(musicXml, "work-title") ?? title;
@@ -1386,7 +1469,8 @@ export function parseMusicXmlToScore(musicXml: string, title = "변환된 악보
     const measureBody = measureMatch[2];
     const numberMatch = /number="([^"]+)"/.exec(measureAttributes);
     const parsedMeasure = numberMatch ? Number.parseInt(numberMatch[1], 10) : Number.NaN;
-    const measure = Number.isFinite(parsedMeasure) && parsedMeasure > 0 ? parsedMeasure : (notes.at(-1)?.measure ?? 1);
+    const measure =
+      Number.isFinite(parsedMeasure) && parsedMeasure > 0 ? parsedMeasure : (notes.at(-1)?.measure ?? chords.at(-1)?.measure ?? 1);
     const divisionsMatch = /<divisions>(\d+)<\/divisions>/.exec(measureBody);
     if (divisionsMatch) {
       divisions = Number.parseInt(divisionsMatch[1], 10) || divisions;
@@ -1394,12 +1478,36 @@ export function parseMusicXmlToScore(musicXml: string, title = "변환된 악보
     let beat = 1;
     let lastOnset = 1;
 
-    const noteRegex = /<note\b[^>]*>([\s\S]*?)<\/note>/gi;
-    let noteMatch: RegExpExecArray | null;
-    while ((noteMatch = noteRegex.exec(measureBody))) {
-      const body = noteMatch[1];
+    const elementRegex = /<(note|harmony|backup|forward)\b[^>]*>([\s\S]*?)<\/\1>/gi;
+    let elementMatch: RegExpExecArray | null;
+    while ((elementMatch = elementRegex.exec(measureBody))) {
+      const tagName = elementMatch[1].toLowerCase();
+      const body = elementMatch[2];
+
+      if (tagName === "harmony") {
+        const chord = parseMusicXmlHarmony(body, measure, beat, chordIndex);
+        if (chord) {
+          chords.push(chord);
+          chordIndex += 1;
+        }
+        continue;
+      }
+
       const durationMatch = /<duration>(\d+)<\/duration>/.exec(body);
       const durationBeats = durationMatch ? Math.max(0.25, Number.parseInt(durationMatch[1], 10) / divisions) : 1;
+
+      if (tagName === "backup") {
+        beat = Math.max(1, beat - durationBeats);
+        lastOnset = beat;
+        continue;
+      }
+
+      if (tagName === "forward") {
+        beat += durationBeats;
+        lastOnset = beat;
+        continue;
+      }
+
       const isChord = /<chord\s*\/?>/.test(body);
 
       if (/<rest\b/.test(body)) {
@@ -1429,6 +1537,7 @@ export function parseMusicXmlToScore(musicXml: string, title = "변환된 악보
         continue;
       }
       const noteBeat = isChord ? lastOnset : beat;
+      const tab = parseMusicXmlTab(body);
 
       notes.push({
         id: `omr-${noteIndex++}`,
@@ -1436,6 +1545,8 @@ export function parseMusicXmlToScore(musicXml: string, title = "변환된 악보
         beat: noteBeat,
         durationBeats,
         midi,
+        tab,
+        originalTab: tab ? { ...tab } : undefined,
         source: "omr",
         confidence: 0.8
       });
@@ -1456,10 +1567,109 @@ export function parseMusicXmlToScore(musicXml: string, title = "변환된 악보
         id: "omr-track-1",
         name: "OMR 악보",
         instrumentPresetId: "guitar-standard-6",
-        notes
+        notes,
+        chords
       }
     ]
   };
+}
+
+function parseMusicXmlHarmony(body: string, measure: number, beat: number, index: number): ChordSymbol | undefined {
+  const rootStep = parseInlineText(body, "root-step");
+  if (!rootStep || !/^[A-G]$/.test(rootStep)) {
+    return undefined;
+  }
+
+  const rootAlter = parseIntegerText(body, "root-alter") ?? 0;
+  const bassStep = parseInlineText(body, "bass-step");
+  const bassAlter = parseIntegerText(body, "bass-alter") ?? 0;
+  const kindMatch = /<kind\b([^>]*)>([\s\S]*?)<\/kind>/i.exec(body);
+  const kindText = kindMatch ? readXmlAttribute(kindMatch[1], "text") : undefined;
+  const kindValue = kindMatch?.[2]?.replace(/<[^>]+>/g, "").trim();
+  const suffix =
+    kindText !== undefined ? decodeXmlText(kindText).trim() : musicXmlKindToChordSuffix(kindValue ? decodeXmlText(kindValue) : "major");
+  const root = `${rootStep}${alterToAccidental(rootAlter)}`;
+  const bass = bassStep && /^[A-G]$/.test(bassStep) ? `${bassStep}${alterToAccidental(bassAlter)}` : undefined;
+  const text = `${root}${suffix}${bass ? `/${bass}` : ""}`;
+
+  return {
+    id: `omr-chord-${index}`,
+    measure,
+    beat,
+    text,
+    originalText: text,
+    source: "omr",
+    confidence: 0.75
+  };
+}
+
+function parseMusicXmlTab(body: string): NoteEvent["tab"] | undefined {
+  const stringNumber = parseIntegerText(body, "string");
+  const fret = parseIntegerText(body, "fret");
+  if (!stringNumber || fret === undefined || stringNumber < 1 || fret < 0) {
+    return undefined;
+  }
+  return {
+    stringNumber,
+    fret,
+    physicalFret: fret
+  };
+}
+
+function parseInlineText(xml: string, tagName: string): string | undefined {
+  const match = new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "i").exec(xml);
+  const value = match?.[1]?.replace(/<[^>]+>/g, "").trim();
+  return value ? decodeXmlText(value) : undefined;
+}
+
+function parseIntegerText(xml: string, tagName: string): number | undefined {
+  const value = parseInlineText(xml, tagName);
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function alterToAccidental(alter: number): string {
+  if (alter > 0) {
+    return "#".repeat(alter);
+  }
+  if (alter < 0) {
+    return "b".repeat(Math.abs(alter));
+  }
+  return "";
+}
+
+function musicXmlKindToChordSuffix(kind: string): string {
+  const normalized = kind.trim().toLowerCase();
+  const map: Record<string, string> = {
+    major: "",
+    none: "",
+    minor: "m",
+    augmented: "aug",
+    diminished: "dim",
+    dominant: "7",
+    "major-seventh": "maj7",
+    "minor-seventh": "m7",
+    "diminished-seventh": "dim7",
+    "half-diminished": "m7b5",
+    "major-minor": "mMaj7",
+    "major-sixth": "6",
+    "minor-sixth": "m6",
+    "dominant-ninth": "9",
+    "major-ninth": "maj9",
+    "minor-ninth": "m9",
+    "dominant-11th": "11",
+    "major-11th": "maj11",
+    "minor-11th": "m11",
+    "dominant-13th": "13",
+    "major-13th": "maj13",
+    "minor-13th": "m13",
+    "suspended-second": "sus2",
+    "suspended-fourth": "sus4"
+  };
+  return map[normalized] ?? normalized;
 }
 
 function parseTimeSignature(musicXml: string): [number, number] {

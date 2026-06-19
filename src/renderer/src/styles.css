@@ -362,6 +362,14 @@ button:disabled {
   place-content: center;
   gap: 10px;
   color: #8a8176;
+  padding: 28px;
+  text-align: center;
+}
+
+.empty-preview small {
+  max-width: 520px;
+  color: #6b6259;
+  line-height: 1.45;
 }
 
 .layout-preview {
@@ -441,11 +449,25 @@ button:disabled {
 
 .layout-note-mask,
 .layout-tab-mask,
+.layout-chord-mask,
+.layout-music-mask,
+.layout-tab-system-mask,
+.layout-rewrite-staff-line,
+.layout-rewrite-tab-line,
 .layout-rewrite-note,
-.layout-rewrite-tab {
+.layout-rewrite-tab,
+.layout-rewrite-chord {
   position: absolute;
-  transform: translate(-50%, -50%);
   pointer-events: none;
+}
+
+.layout-note-mask,
+.layout-tab-mask,
+.layout-chord-mask,
+.layout-rewrite-note,
+.layout-rewrite-tab,
+.layout-rewrite-chord {
+  transform: translate(-50%, -50%);
 }
 
 .layout-note-mask {
@@ -480,6 +502,21 @@ button:disabled {
   background: #ffffff;
 }
 
+.layout-chord-mask {
+  background: #ffffff;
+}
+
+.layout-music-mask,
+.layout-tab-system-mask {
+  background: #ffffff;
+}
+
+.layout-rewrite-staff-line,
+.layout-rewrite-tab-line {
+  height: 1px;
+  background: #111111;
+}
+
 .layout-rewrite-tab {
   min-width: 14px;
   min-height: 12px;
@@ -490,6 +527,16 @@ button:disabled {
   font-size: 10px;
   font-weight: 700;
   line-height: 1;
+}
+
+.layout-rewrite-chord {
+  display: inline-block;
+  background: #ffffff;
+  color: #111111;
+  font-family: Arial, "Malgun Gothic", sans-serif;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .layout-rewrite-note.active,

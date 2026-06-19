@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { transposeAndRemap } from "./fingering";
 import { GUITAR_STANDARD_6 } from "./instruments";
 import { buildExportHtml } from "./exportDocument";
-import type { ScoreModel } from "./types";
+import type { FingeringWarning, ScoreModel } from "./types";
 
 describe("export document", () => {
   it("rejects export when source layout is unavailable", () => {
@@ -43,8 +43,35 @@ describe("export document", () => {
     expect(html).toContain("source-page");
     expect(html).toContain("rewrite-note");
     expect(html).toContain("rewrite-tab");
+    expect(html).toContain("rewrite-chord");
+    expect(html).toContain("Bm7");
     expect(html).toContain("data:image/png;base64,page");
     expect(html).not.toContain("score-system");
+  });
+
+  it("blocks layout export when fingering errors make the score unreliable", () => {
+    const options = {
+      semitones: -2,
+      capo: 0,
+      instrumentPresetId: GUITAR_STANDARD_6.id
+    };
+    const result = transposeAndRemap(createLayoutScore(), options);
+    const warnings: FingeringWarning[] = Array.from({ length: 12 }, (_, index) => ({
+      noteId: `n${index}`,
+      measure: 1,
+      message: "range error",
+      severity: "error"
+    }));
+
+    expect(() =>
+      buildExportHtml({
+        score: result.score,
+        sourceName: "layout.pdf",
+        instrumentName: GUITAR_STANDARD_6.name,
+        transposeOptions: options,
+        warnings
+      })
+    ).toThrow("완전 변환 불가");
   });
 });
 
@@ -59,6 +86,7 @@ function createTestScore(): ScoreModel {
         id: "track-1",
         name: "테스트 트랙",
         instrumentPresetId: GUITAR_STANDARD_6.id,
+        chords: [{ id: "ch1", measure: 1, beat: 1, text: "C#m7" }],
         notes: [
           { id: "n1", measure: 1, beat: 1, durationBeats: 1, midi: 52 },
           { id: "n2", measure: 1, beat: 2, durationBeats: 1, midi: 55 },
@@ -82,6 +110,7 @@ function createLayoutScore(): ScoreModel {
         id: "track-1",
         name: "테스트 트랙",
         instrumentPresetId: GUITAR_STANDARD_6.id,
+        chords: [{ id: "layout-ch1", measure: 1, beat: 1, text: "C#m7" }],
         notes: [
           {
             id: "n1",

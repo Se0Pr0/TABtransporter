@@ -14,12 +14,28 @@ const SIMPLE_MUSIC_XML = `<?xml version="1.0" encoding="UTF-8"?>
         </time>
       </attributes>
       <sound tempo="108" />
+      <harmony>
+        <root>
+          <root-step>C</root-step>
+          <root-alter>1</root-alter>
+        </root>
+        <kind text="m7">minor-seventh</kind>
+        <bass>
+          <bass-step>E</bass-step>
+        </bass>
+      </harmony>
       <note>
         <pitch>
           <step>C</step>
           <octave>4</octave>
         </pitch>
         <duration>1</duration>
+        <notations>
+          <technical>
+            <string>2</string>
+            <fret>1</fret>
+          </technical>
+        </notations>
       </note>
       <note>
         <chord />
@@ -51,6 +67,8 @@ describe("MusicXML OMR parsing", () => {
     expect(score.tracks[0].notes.map((note) => note.midi)).toEqual([60, 64, 63]);
     expect(score.tracks[0].notes.map((note) => note.beat)).toEqual([1, 1, 2]);
     expect(score.tracks[0].notes.map((note) => note.durationBeats)).toEqual([1, 1, 2]);
+    expect(score.tracks[0].notes[0].originalTab).toEqual({ stringNumber: 2, fret: 1, physicalFret: 1 });
+    expect(score.tracks[0].chords?.map((chord) => `${chord.text}:${chord.beat}`)).toEqual(["C#m7/E:1"]);
   });
 
   it("recovers low-confidence notes from Audiveris internal sheet XML", () => {

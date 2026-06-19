@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildLayoutRewritePlacements } from "./layoutRewrite";
+import { buildLayoutChordRewritePlacements, buildLayoutRewritePlacements } from "./layoutRewrite";
 import type { NoteEvent, ScoreLayoutPage } from "./types";
 
 describe("layout rewrite placement", () => {
@@ -34,6 +34,25 @@ describe("layout rewrite placement", () => {
     expect(placements[2].tabTopPercent).toBeDefined();
     expect(placements[0].tabTopPercent!).toBeLessThan(placements[2].tabTopPercent!);
     expect(placements[2].rewrittenTopPercent).toBeGreaterThan(placements[0].rewrittenTopPercent);
+  });
+
+  it("places transposed chord symbols above the matching source system", () => {
+    const page: ScoreLayoutPage = { page: 1, width: 1000, height: 1400 };
+    const notes: NoteEvent[] = [
+      { ...createNote("n1", 64, 62, 100, 220), measure: 2, beat: 1 },
+      { ...createNote("n2", 62, 60, 220, 236), measure: 2, beat: 2 }
+    ];
+
+    const placements = buildLayoutChordRewritePlacements(
+      [{ id: "ch1", measure: 2, beat: 1, text: "D", originalText: "E" }],
+      notes,
+      page
+    );
+
+    expect(placements).toHaveLength(1);
+    expect(placements[0].text).toBe("D");
+    expect(placements[0].topPercent).toBeLessThan(((220 + 4) / 1400) * 100);
+    expect(placements[0].maskWidth).toBeGreaterThan(20);
   });
 });
 

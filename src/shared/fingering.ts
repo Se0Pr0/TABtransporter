@@ -1,6 +1,7 @@
 import { getInstrumentPreset } from "./instruments";
 import { clampMidi } from "./pitch";
 import { cloneScore } from "./score";
+import { transposeChordText } from "./chords";
 import type {
   FingeringCandidate,
   FingeringWarning,
@@ -16,8 +17,13 @@ export function transposeScore(score: ScoreModel, semitones: number): ScoreModel
   for (const track of next.tracks) {
     for (const note of track.notes) {
       note.originalMidi = note.originalMidi ?? note.midi;
+      note.originalTab = note.originalTab ?? (note.tab ? { ...note.tab } : undefined);
       note.midi = clampMidi(note.midi + semitones);
       note.tab = undefined;
+    }
+    for (const chord of track.chords ?? []) {
+      chord.originalText = chord.originalText ?? chord.text;
+      chord.text = transposeChordText(chord.originalText, semitones);
     }
   }
   return next;

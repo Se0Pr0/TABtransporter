@@ -17,8 +17,15 @@ import { getInstrumentPreset, INSTRUMENT_PRESETS } from "../../shared/instrument
 import { transposeAndRemap } from "../../shared/fingering";
 import { midiToNoteName } from "../../shared/pitch";
 import { createEmptyScore } from "../../shared/score";
-import { buildExportHtml } from "../../shared/exportDocument";
-import { buildLayoutRewritePlacements, type LayoutRewritePlacement } from "../../shared/layoutRewrite";
+import { buildExportHtml, getLayoutExportIssues } from "../../shared/exportDocument";
+import {
+  buildLayoutChordRewritePlacements,
+  buildLayoutRewritePlacements,
+  buildLayoutSystemRewriteRegions,
+  type LayoutChordRewritePlacement,
+  type LayoutRewritePlacement,
+  type LayoutSystemRewriteRegion
+} from "../../shared/layoutRewrite";
 import type {
   AudiverisStatus,
   ConversionResult,
@@ -89,6 +96,7 @@ export function App() {
   const playback = usePlayback(convertedScore ?? EMPTY_SCORE);
   const selectedInstrument = INSTRUMENT_PRESETS.find((preset) => preset.id === instrumentId) ?? INSTRUMENT_PRESETS[0];
   const hasSourceNotes = Boolean(sourceScore?.tracks.some((track) => track.notes.length > 0));
+  const layoutExportIssues = convertedScore ? getLayoutExportIssues(convertedScore, warnings) : [];
 
   useEffect(() => {
     void refreshAudiverisStatus();
@@ -221,13 +229,25 @@ export function App() {
         return;
       }
 
-      const html = buildExportHtml({
-        score: convertedScore,
-        sourceName: convertedMeta.sourceName,
-        instrumentName: convertedMeta.instrumentName,
-        transposeOptions: convertedMeta.options,
-        warnings
-      });
+      const issues = getLayoutExportIssues(convertedScore, warnings);
+      if (issues.length) {
+        setStatus(issues.join(" "));
+        return;
+      }
+
+      let html: string;
+      try {
+        html = buildExportHtml({
+          score: convertedScore,
+          sourceName: convertedMeta.sourceName,
+          instrumentName: convertedMeta.instrumentName,
+          transposeOptions: convertedMeta.options,
+          warnings
+        });
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "PDF/PNG 저장용 변환 결과를 만들 수 없습니다.");
+        return;
+      }
       setStatus(`${format.toUpperCase()} 파일로 변환된 악보를 저장하고 있습니다.`);
       const result = await window.tabTransporter.exportCurrentView({
         format,
@@ -344,7 +364,9 @@ export function App() {
               <small>변환하기를 누른 뒤 저장됩니다</small>
             </div>
             {convertedScore ? (
-              hasOriginalLayout(convertedScore) && openedFile ? (
+              layoutExportIssues.length ? (
+                <StrictConversionUnreliable issues={layoutExportIssues} />
+              ) : hasOriginalLayout(convertedScore) && openedFile ? (
                 <LayoutRewritePreview file={openedFile} score={convertedScore} activeNoteId={playback.activeNoteId} />
               ) : (
                 <StrictLayoutMissing />
@@ -511,6 +533,18 @@ function StrictLayoutMissing() {
   );
 }
 
+function StrictConversionUnreliable({ issues }: { issues: string[] }) {
+  return (
+    <div className="empty-preview">
+      <AlertTriangle size={42} />
+      <span>완전 변환 불가</span>
+      {issues.map((issue) => (
+        <small key={issue}>{issue}</small>
+      ))}
+    </div>
+  );
+}
+
 function AnalysisOverlay({ progress, fileName }: { progress: OmrProgress; fileName?: string }) {
   const phaseLabel = {
     preparing: "준비",
@@ -601,6 +635,84 @@ function LayoutRewriteNote({
   );
 }
 
+function LayoutRewriteChord({ placement }: { placement: LayoutChordRewritePlacement }) {
+  return (
+    <>
+      <span
+        className="layout-chord-mask"
+        style={{
+          left: `${placement.leftPercent}%`,
+          top: `${placement.topPercent}%`,
+          width: `${placement.maskWidth}px`,
+          height: `${placement.maskHeight}px`
+        }}
+      />
+      <span
+        className="layout-rewrite-chord"
+        style={{
+          left: `${placement.leftPercent}%`,
+          top: `${placement.topPercent}%`,
+          fontSize: `${placement.fontSize}px`
+        }}
+        title={placement.text}
+      >
+        {placement.text}
+      </span>
+    </>
+  );
+}
+
+function LayoutRewriteSystemRegion({ placement }: { placement: LayoutSystemRewriteRegion }) {
+  return (
+    <>
+      <span
+        className="layout-music-mask"
+        style={{
+          left: `${placement.leftPercent}%`,
+          top: `${placement.staffTopPercent}%`,
+          width: `${placement.widthPercent}%`,
+          height: `${placement.staffHeightPercent}%`
+        }}
+      />
+      {placement.staffLineTopPercents.map((top, index) => (
+        <span
+          className="layout-rewrite-staff-line"
+          key={`staff-${index}`}
+          style={{
+            left: `${placement.leftPercent}%`,
+            top: `${top}%`,
+            width: `${placement.widthPercent}%`
+          }}
+        />
+      ))}
+      {placement.tabTopPercent !== undefined && placement.tabHeightPercent !== undefined && placement.tabLineTopPercents && (
+        <>
+          <span
+            className="layout-tab-system-mask"
+            style={{
+              left: `${placement.leftPercent}%`,
+              top: `${placement.tabTopPercent}%`,
+              width: `${placement.widthPercent}%`,
+              height: `${placement.tabHeightPercent}%`
+            }}
+          />
+          {placement.tabLineTopPercents.map((top, index) => (
+            <span
+              className="layout-rewrite-tab-line"
+              key={`tab-${index}`}
+              style={{
+                left: `${placement.leftPercent}%`,
+                top: `${top}%`,
+                width: `${placement.widthPercent}%`
+              }}
+            />
+          ))}
+        </>
+      )}
+    </>
+  );
+}
+
 function LayoutRewritePreview({
   file,
   score,
@@ -611,6 +723,8 @@ function LayoutRewritePreview({
   activeNoteId?: string;
 }) {
   const notes = score.tracks.flatMap((track) => track.notes).filter((note) => note.originalSource);
+  const chords = score.tracks.flatMap((track) => track.chords ?? []);
+  const stringCount = Math.max(1, ...score.tracks.map((track) => getInstrumentPreset(track.instrumentPresetId).stringCount));
   const layoutPages = score.layoutPages?.filter((page) => page.width > 0 && page.height > 0) ?? [];
 
   if (!notes.length) {
@@ -622,17 +736,25 @@ function LayoutRewritePreview({
       <div className="layout-preview layout-rewrite-preview" aria-label="원본 레이아웃 보존 변환 결과">
         {layoutPages.map((page) => {
           const pageNotes = notes.filter((note) => note.originalSource?.page === page.page);
+          const regions = buildLayoutSystemRewriteRegions(pageNotes, page, stringCount);
           const placements = buildLayoutRewritePlacements(pageNotes, page);
+          const chordPlacements = buildLayoutChordRewritePlacements(chords, notes, page);
           return (
             <div className="layout-page" key={page.page} style={{ aspectRatio: `${page.width} / ${page.height}` }}>
               {page.dataUrl && <img className="layout-page-source" src={page.dataUrl} alt={`${page.page}페이지 변환 악보`} />}
               <div className="layout-overlay">
+                {regions.map((placement) => (
+                  <LayoutRewriteSystemRegion key={placement.regionId} placement={placement} />
+                ))}
                 {placements.map((placement) => (
                   <LayoutRewriteNote
                     key={placement.noteId}
                     placement={placement}
                     active={activeNoteId === placement.noteId}
                   />
+                ))}
+                {chordPlacements.map((placement) => (
+                  <LayoutRewriteChord key={placement.chordId} placement={placement} />
                 ))}
               </div>
             </div>
@@ -649,19 +771,27 @@ function LayoutRewritePreview({
   const width = Math.max(...notes.map((note) => (note.originalSource?.x ?? 0) + (note.originalSource?.width ?? 0)), 1);
   const height = Math.max(...notes.map((note) => (note.originalSource?.y ?? 0) + (note.originalSource?.height ?? 0)), 1);
   const fallbackPage = { page: 1, width, height };
+  const regions = buildLayoutSystemRewriteRegions(notes, fallbackPage, stringCount);
   const placements = buildLayoutRewritePlacements(notes, fallbackPage);
+  const chordPlacements = buildLayoutChordRewritePlacements(chords, notes, fallbackPage);
 
   return (
     <div className="layout-preview layout-rewrite-preview" aria-label="원본 레이아웃 보존 변환 결과">
       <div className="layout-page" style={{ aspectRatio: `${width} / ${height}` }}>
         <img className="layout-page-source" src={file.dataUrl} alt="변환 악보" />
         <div className="layout-overlay">
+          {regions.map((placement) => (
+            <LayoutRewriteSystemRegion key={placement.regionId} placement={placement} />
+          ))}
           {placements.map((placement) => (
             <LayoutRewriteNote
               key={placement.noteId}
               placement={placement}
               active={activeNoteId === placement.noteId}
             />
+          ))}
+          {chordPlacements.map((placement) => (
+            <LayoutRewriteChord key={placement.chordId} placement={placement} />
           ))}
         </div>
       </div>

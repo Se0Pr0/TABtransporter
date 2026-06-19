@@ -1,4 +1,4 @@
-import type { NoteEvent, ScoreLayoutPage } from "./types";
+import type { ChordSymbol, NoteEvent, ScoreLayoutPage } from "./types";
 import { midiToNoteName } from "./pitch";
 
 export interface LayoutRewritePlacement {
@@ -19,6 +19,28 @@ export interface LayoutRewritePlacement {
   tabMaskWidth?: number;
   tabMaskHeight?: number;
   tabFontSize?: number;
+}
+
+export interface LayoutChordRewritePlacement {
+  chordId: string;
+  text: string;
+  leftPercent: number;
+  topPercent: number;
+  maskWidth: number;
+  maskHeight: number;
+  fontSize: number;
+}
+
+export interface LayoutSystemRewriteRegion {
+  regionId: string;
+  leftPercent: number;
+  widthPercent: number;
+  staffTopPercent: number;
+  staffHeightPercent: number;
+  staffLineTopPercents: number[];
+  tabTopPercent?: number;
+  tabHeightPercent?: number;
+  tabLineTopPercents?: number[];
 }
 
 interface SourcePoint {
@@ -43,21 +65,7 @@ const SYSTEM_CLUSTER_THRESHOLD = 150;
 
 export function buildLayoutRewritePlacements(notes: NoteEvent[], page: ScoreLayoutPage): LayoutRewritePlacement[] {
   const pageNotes = notes.filter((note) => note.originalSource?.page === page.page);
-  const points = pageNotes.flatMap((note): SourcePoint[] => {
-    const source = note.originalSource;
-    if (!source) {
-      return [];
-    }
-    return [
-      {
-        note,
-        centerX: source.x + source.width / 2,
-        centerY: source.y + source.height / 2,
-        midi: note.originalMidi ?? note.midi,
-        staff: source.staff ?? 0
-      }
-    ];
-  });
+  const points = buildSourcePoints(pageNotes);
   const clusters = buildSourceClusters(points, page.height);
   const clusterByNoteId = new Map<string, SourceCluster>();
   for (const cluster of clusters) {
@@ -87,8 +95,8 @@ export function buildLayoutRewritePlacements(notes: NoteEvent[], page: ScoreLayo
       noteLeftPercent: (point.centerX / pageWidth) * 100,
       sourceTopPercent: (point.centerY / pageHeight) * 100,
       rewrittenTopPercent: (rewrittenY / pageHeight) * 100,
-      noteMaskWidth: clamp(Math.max(source.width * 2.8, semitonePx * 3.2), 20, 46),
-      noteMaskHeight: clamp(semitonePx * 7.5, 38, 78),
+      noteMaskWidth: clamp(Math.max(source.width * 3.7, semitonePx * 4.1), 26, 58),
+      noteMaskHeight: clamp(semitonePx * 8.6, 46, 92),
       noteWidth: clamp(Math.max(source.width * 1.15, semitonePx * 1.2), 9, 17),
       noteHeight: clamp(Math.max(source.height * 0.95, semitonePx * 0.82), 7, 13),
       stemHeight: clamp(semitonePx * 4.7, 24, 46),
@@ -96,11 +104,104 @@ export function buildLayoutRewritePlacements(notes: NoteEvent[], page: ScoreLayo
       tabTopPercent: tabY === undefined ? undefined : (tabY / pageHeight) * 100,
       tabValue,
       tabTitle: point.note.tab ? `${point.note.tab.stringNumber}번줄 ${point.note.tab.fret}프렛` : undefined,
-      tabMaskWidth: tabValue ? clamp(tabValue.length * 9 + 10, 18, 38) : undefined,
-      tabMaskHeight: tabValue ? clamp(tabLineGap * 1.35, 13, 26) : undefined,
+      tabMaskWidth: tabValue ? clamp(tabValue.length * 10 + 16, 24, 48) : undefined,
+      tabMaskHeight: tabValue ? clamp(tabLineGap * 1.7, 16, 31) : undefined,
       tabFontSize: tabValue ? clamp(tabLineGap * 0.78, 9, 14) : undefined
     };
   });
+}
+
+export function buildLayoutSystemRewriteRegions(
+  notes: NoteEvent[],
+  page: ScoreLayoutPage,
+  stringCount: number
+): LayoutSystemRewriteRegion[] {
+  const pageNotes = notes.filter((note) => note.originalSource?.page === page.page);
+  const points = buildSourcePoints(pageNotes);
+  const clusters = buildSourceClusters(points, page.height);
+
+  return clusters.map((cluster, index) => {
+    const pageWidth = page.width;
+    const pageHeight = page.height;
+    const minX = Math.min(...cluster.points.map((point) => point.centerX));
+    const maxX = Math.max(...cluster.points.map((point) => point.centerX));
+    const left = clamp(minX - cluster.semitonePx * 3.5, 0, pageWidth);
+    const right = clamp(maxX + cluster.semitonePx * 4.8, left + 1, pageWidth);
+    const staffFirstLine = cluster.centerY - cluster.semitonePx * 4;
+    const staffLineGap = cluster.semitonePx * 2;
+    const staffTop = clamp(staffFirstLine - cluster.semitonePx * 3.2, 0, pageHeight);
+    const staffBottom = clamp(staffFirstLine + staffLineGap * 4 + cluster.semitonePx * 3.2, staffTop + 1, pageHeight);
+    const tabFirstLine = cluster.centerY + cluster.tabOffset;
+    const tabLineGap = cluster.tabLineGap;
+    const tabLines = Array.from({ length: Math.max(1, stringCount) }, (_, line) => tabFirstLine + line * tabLineGap);
+    const tabTop = clamp(tabLines[0] - tabLineGap * 0.75, 0, pageHeight);
+    const tabBottom = clamp(tabLines.at(-1)! + tabLineGap * 0.75, tabTop + 1, pageHeight);
+
+    return {
+      regionId: `${page.page}-${cluster.staff}-${index}`,
+      leftPercent: (left / pageWidth) * 100,
+      widthPercent: ((right - left) / pageWidth) * 100,
+      staffTopPercent: (staffTop / pageHeight) * 100,
+      staffHeightPercent: ((staffBottom - staffTop) / pageHeight) * 100,
+      staffLineTopPercents: Array.from({ length: 5 }, (_, line) => ((staffFirstLine + line * staffLineGap) / pageHeight) * 100),
+      tabTopPercent: (tabTop / pageHeight) * 100,
+      tabHeightPercent: ((tabBottom - tabTop) / pageHeight) * 100,
+      tabLineTopPercents: tabLines.map((lineY) => (lineY / pageHeight) * 100)
+    };
+  });
+}
+
+export function buildLayoutChordRewritePlacements(
+  chords: ChordSymbol[],
+  notes: NoteEvent[],
+  page: ScoreLayoutPage
+): LayoutChordRewritePlacement[] {
+  const pageNotes = notes.filter((note) => note.originalSource?.page === page.page);
+  if (!pageNotes.length || !chords.length) {
+    return [];
+  }
+
+  const points = buildSourcePoints(pageNotes);
+  const clusters = buildSourceClusters(points, page.height);
+  const clusterByNoteId = new Map<string, SourceCluster>();
+  for (const cluster of clusters) {
+    for (const point of cluster.points) {
+      clusterByNoteId.set(point.note.id, cluster);
+    }
+  }
+
+  return chords
+    .map((chord): LayoutChordRewritePlacement | undefined => {
+      const anchor = findChordAnchor(chord, pageNotes);
+      if (!anchor?.originalSource) {
+        return undefined;
+      }
+      const source = chord.originalSource ?? anchor.originalSource;
+      if (source.page !== page.page) {
+        return undefined;
+      }
+      const cluster = clusterByNoteId.get(anchor.id);
+      const semitonePx = cluster?.semitonePx ?? DEFAULT_SEMITONE_PX;
+      const pageWidth = source.pageWidth ?? page.width;
+      const pageHeight = source.pageHeight ?? page.height;
+      const centerX = source.x + source.width / 2;
+      const sourceCenterY = source.y + source.height / 2;
+      const y = chord.originalSource
+        ? sourceCenterY
+        : (cluster?.centerY ?? sourceCenterY) - clamp(semitonePx * 7.8, 42, 72);
+      const width = Math.max(chord.originalText?.length ?? 0, chord.text.length) * 8 + 18;
+
+      return {
+        chordId: chord.id,
+        text: chord.text,
+        leftPercent: (centerX / pageWidth) * 100,
+        topPercent: (y / pageHeight) * 100,
+        maskWidth: clamp(width, 28, 92),
+        maskHeight: clamp(semitonePx * 2.7, 18, 34),
+        fontSize: clamp(semitonePx * 1.45, 10, 15)
+      };
+    })
+    .filter((placement): placement is LayoutChordRewritePlacement => Boolean(placement));
 }
 
 function buildSourceClusters(points: SourcePoint[], pageHeight: number): SourceCluster[] {
@@ -163,6 +264,32 @@ function nearestCluster(clusters: SourceCluster[], y: number): SourceCluster | u
     }
   }
   return nearest;
+}
+
+function findChordAnchor(chord: ChordSymbol, notes: NoteEvent[]): NoteEvent | undefined {
+  const sameMeasure = notes.filter((note) => note.measure === chord.measure);
+  const candidates = sameMeasure.length ? sameMeasure : notes;
+  return candidates
+    .filter((note) => note.originalSource)
+    .sort((a, b) => Math.abs(a.beat - chord.beat) - Math.abs(b.beat - chord.beat) || a.beat - b.beat)[0];
+}
+
+function buildSourcePoints(notes: NoteEvent[]): SourcePoint[] {
+  return notes.flatMap((note): SourcePoint[] => {
+    const source = note.originalSource;
+    if (!source) {
+      return [];
+    }
+    return [
+      {
+        note,
+        centerX: source.x + source.width / 2,
+        centerY: source.y + source.height / 2,
+        midi: note.originalMidi ?? note.midi,
+        staff: source.staff ?? 0
+      }
+    ];
+  });
 }
 
 function estimateSemitonePixels(points: SourcePoint[]): number {

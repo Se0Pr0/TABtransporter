@@ -1,7 +1,7 @@
-import type { FingeringWarning, NoteEvent, ScoreLayoutPage, ScoreModel, TransposeOptions } from "./types";
+import type { ChordSymbol, FingeringWarning, NoteEvent, ScoreLayoutPage, ScoreModel, TransposeOptions } from "./types";
 import { getInstrumentPreset } from "./instruments";
 import { midiToNoteName } from "./pitch";
-import { buildLayoutRewritePlacements } from "./layoutRewrite";
+import { buildLayoutChordRewritePlacements, buildLayoutRewritePlacements, buildLayoutSystemRewriteRegions } from "./layoutRewrite";
 
 export interface ExportDocumentOptions {
   score: ScoreModel;
@@ -15,9 +15,14 @@ export function buildExportHtml(options: ExportDocumentOptions): string {
   const { score, sourceName, instrumentName, transposeOptions, warnings } = options;
   const layoutPages = score.layoutPages?.filter((page) => page.width > 0 && page.height > 0 && page.dataUrl) ?? [];
   const layoutNotes = score.tracks.flatMap((track) => track.notes).filter((note) => note.originalSource);
+  const layoutChords = score.tracks.flatMap((track) => track.chords ?? []);
 
   if (layoutPages.length && layoutNotes.length) {
-    return buildLayoutPreservingHtml(options, layoutPages, layoutNotes);
+    const issues = getLayoutExportIssues(score, warnings);
+    if (issues.length) {
+      throw new Error(issues.join(" "));
+    }
+    return buildLayoutPreservingHtml(options, layoutPages, layoutNotes, layoutChords);
   }
 
   throw new Error("원본과 같은 형식으로 저장할 원본 페이지 레이아웃 데이터가 없습니다.");
@@ -235,24 +240,49 @@ export function buildExportHtml(options: ExportDocumentOptions): string {
 </html>`;
 }
 
+export function getLayoutExportIssues(score: ScoreModel, warnings: FingeringWarning[]): string[] {
+  const notes = score.tracks.flatMap((track) => track.notes);
+  const layoutNotes = notes.filter((note) => note.originalSource);
+  if (!score.layoutPages?.some((page) => page.dataUrl) || !layoutNotes.length) {
+    return ["원본과 같은 형식으로 저장할 원본 페이지 레이아웃 데이터가 없습니다."];
+  }
+
+  const errorCount = warnings.filter((warning) => warning.severity === "error").length;
+  const maxAllowedErrors = Math.max(8, Math.ceil(Math.max(1, notes.length) * 0.1));
+  if (errorCount > maxAllowedErrors) {
+    return [
+      `완전 변환 불가: 악기 음역이나 운지 배정에 실패한 음표가 ${errorCount}개입니다.`,
+      "이 상태로 PDF/PNG를 저장하면 원본과 같은 악보가 아니라 잘못 덮어쓴 결과가 됩니다."
+    ];
+  }
+
+  return [];
+}
+
 const STAFF_PX_PER_SEMITONE = 3.8;
 const TAB_OFFSET_PX = 76;
 
 function buildLayoutPreservingHtml(
   options: ExportDocumentOptions,
   pages: ScoreLayoutPage[],
-  notes: NoteEvent[]
+  notes: NoteEvent[],
+  chords: ChordSymbol[]
 ): string {
   const { score, sourceName, instrumentName, transposeOptions, warnings } = options;
+  const stringCount = Math.max(1, ...score.tracks.map((track) => getInstrumentPreset(track.instrumentPresetId).stringCount));
   const pageHtml = pages
     .map((page) => {
       const pageNotes = notes.filter((note) => note.originalSource?.page === page.page);
+      const regions = buildLayoutSystemRewriteRegions(pageNotes, page, stringCount);
       const placements = buildLayoutRewritePlacements(pageNotes, page);
+      const chordPlacements = buildLayoutChordRewritePlacements(chords, notes, page);
       return `
         <section class="source-page" style="aspect-ratio:${page.width}/${page.height}">
           <img src="${page.dataUrl}" alt="${page.page}페이지 변환 악보" />
           <div class="rewrite-layer">
+            ${regions.map(renderLayoutSystemRewriteRegion).join("")}
             ${placements.map(renderLayoutRewritePlacement).join("")}
+            ${chordPlacements.map(renderLayoutChordRewritePlacement).join("")}
           </div>
         </section>
       `;
@@ -309,9 +339,23 @@ function buildLayoutPreservingHtml(
 
       .note-mask,
       .tab-mask,
+      .chord-mask,
+      .music-mask,
+      .tab-system-mask,
+      .rewrite-staff-line,
+      .rewrite-tab-line,
       .rewrite-note,
-      .rewrite-tab {
+      .rewrite-tab,
+      .rewrite-chord {
         position: absolute;
+      }
+
+      .note-mask,
+      .tab-mask,
+      .chord-mask,
+      .rewrite-note,
+      .rewrite-tab,
+      .rewrite-chord {
         transform: translate(-50%, -50%);
       }
 
@@ -341,6 +385,21 @@ function buildLayoutPreservingHtml(
         background: #ffffff;
       }
 
+      .chord-mask {
+        background: #ffffff;
+      }
+
+      .music-mask,
+      .tab-system-mask {
+        background: #ffffff;
+      }
+
+      .rewrite-staff-line,
+      .rewrite-tab-line {
+        height: 1px;
+        background: #111111;
+      }
+
       .rewrite-tab {
         min-width: 14px;
         min-height: 12px;
@@ -351,6 +410,16 @@ function buildLayoutPreservingHtml(
         font-size: 10px;
         font-weight: 700;
         line-height: 1;
+      }
+
+      .rewrite-chord {
+        display: inline-block;
+        background: #ffffff;
+        color: #111111;
+        font-family: Arial, "Malgun Gothic", sans-serif;
+        font-weight: 700;
+        line-height: 1;
+        white-space: nowrap;
       }
 
       .export-meta {
@@ -381,6 +450,23 @@ function buildLayoutPreservingHtml(
 </html>`;
 }
 
+function renderLayoutSystemRewriteRegion(placement: ReturnType<typeof buildLayoutSystemRewriteRegions>[number]): string {
+  return `
+    <span class="music-mask" style="left:${placement.leftPercent}%;top:${placement.staffTopPercent}%;width:${placement.widthPercent}%;height:${placement.staffHeightPercent}%"></span>
+    ${placement.staffLineTopPercents
+      .map((top) => `<span class="rewrite-staff-line" style="left:${placement.leftPercent}%;top:${top}%;width:${placement.widthPercent}%"></span>`)
+      .join("")}
+    ${
+      placement.tabTopPercent !== undefined && placement.tabHeightPercent !== undefined && placement.tabLineTopPercents
+        ? `<span class="tab-system-mask" style="left:${placement.leftPercent}%;top:${placement.tabTopPercent}%;width:${placement.widthPercent}%;height:${placement.tabHeightPercent}%"></span>
+           ${placement.tabLineTopPercents
+             .map((top) => `<span class="rewrite-tab-line" style="left:${placement.leftPercent}%;top:${top}%;width:${placement.widthPercent}%"></span>`)
+             .join("")}`
+        : ""
+    }
+  `;
+}
+
 function renderLayoutRewritePlacement(placement: ReturnType<typeof buildLayoutRewritePlacements>[number]): string {
   return `
     <span class="note-mask" style="left:${placement.noteLeftPercent}%;top:${placement.sourceTopPercent}%;width:${placement.noteMaskWidth}px;height:${placement.noteMaskHeight}px"></span>
@@ -393,6 +479,15 @@ function renderLayoutRewritePlacement(placement: ReturnType<typeof buildLayoutRe
            )}">${escapeHtml(placement.tabValue)}</span>`
         : ""
     }
+  `;
+}
+
+function renderLayoutChordRewritePlacement(placement: ReturnType<typeof buildLayoutChordRewritePlacements>[number]): string {
+  return `
+    <span class="chord-mask" style="left:${placement.leftPercent}%;top:${placement.topPercent}%;width:${placement.maskWidth}px;height:${placement.maskHeight}px"></span>
+    <span class="rewrite-chord" style="left:${placement.leftPercent}%;top:${placement.topPercent}%;font-size:${placement.fontSize}px" title="${escapeHtml(
+      placement.text
+    )}">${escapeHtml(placement.text)}</span>
   `;
 }
 

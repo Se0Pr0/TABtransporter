@@ -53,6 +53,18 @@ export interface NoteEvent {
   originalMidi?: number;
   velocity?: number;
   tab?: TabPosition;
+  originalTab?: TabPosition;
+  source?: "omr" | "manual" | "demo";
+  confidence?: number;
+  originalSource?: SourceBounds;
+}
+
+export interface ChordSymbol {
+  id: string;
+  measure: number;
+  beat: number;
+  text: string;
+  originalText?: string;
   source?: "omr" | "manual" | "demo";
   confidence?: number;
   originalSource?: SourceBounds;
@@ -63,6 +75,7 @@ export interface ScoreTrack {
   name: string;
   instrumentPresetId: string;
   notes: NoteEvent[];
+  chords?: ChordSymbol[];
 }
 
 export interface ScoreModel {

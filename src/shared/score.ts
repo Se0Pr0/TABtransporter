@@ -26,7 +26,12 @@ export function cloneScore(score: ScoreModel): ScoreModel {
       notes: track.notes.map((note) => ({
         ...note,
         tab: note.tab ? { ...note.tab } : undefined,
+        originalTab: note.originalTab ? { ...note.originalTab } : undefined,
         originalSource: note.originalSource ? { ...note.originalSource } : undefined
+      })),
+      chords: track.chords?.map((chord) => ({
+        ...chord,
+        originalSource: chord.originalSource ? { ...chord.originalSource } : undefined
       }))
     }))
   };
