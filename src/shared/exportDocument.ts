@@ -1,6 +1,7 @@
 import type { FingeringWarning, NoteEvent, ScoreLayoutPage, ScoreModel, TransposeOptions } from "./types";
 import { getInstrumentPreset } from "./instruments";
 import { midiToNoteName } from "./pitch";
+import { buildLayoutRewritePlacements } from "./layoutRewrite";
 
 export interface ExportDocumentOptions {
   score: ScoreModel;
@@ -246,11 +247,12 @@ function buildLayoutPreservingHtml(
   const pageHtml = pages
     .map((page) => {
       const pageNotes = notes.filter((note) => note.originalSource?.page === page.page);
+      const placements = buildLayoutRewritePlacements(pageNotes, page);
       return `
         <section class="source-page" style="aspect-ratio:${page.width}/${page.height}">
           <img src="${page.dataUrl}" alt="${page.page}페이지 변환 악보" />
           <div class="rewrite-layer">
-            ${pageNotes.map((note) => renderLayoutRewriteNote(note, page)).join("")}
+            ${placements.map(renderLayoutRewritePlacement).join("")}
           </div>
         </section>
       `;
@@ -314,14 +316,10 @@ function buildLayoutPreservingHtml(
       }
 
       .note-mask {
-        width: 28px;
-        height: 48px;
         background: #ffffff;
       }
 
       .rewrite-note {
-        width: 11px;
-        height: 8px;
         border-radius: 50%;
         background: #111111;
         transform: translate(-50%, -50%) rotate(-18deg);
@@ -333,15 +331,13 @@ function buildLayoutPreservingHtml(
         right: -1px;
         bottom: 4px;
         width: 1px;
-        height: 28px;
+        height: var(--stem-height, 28px);
         background: #111111;
         transform: rotate(18deg);
         transform-origin: bottom center;
       }
 
       .tab-mask {
-        width: 22px;
-        height: 14px;
         background: #ffffff;
       }
 
@@ -385,29 +381,16 @@ function buildLayoutPreservingHtml(
 </html>`;
 }
 
-function renderLayoutRewriteNote(note: NoteEvent, page: ScoreLayoutPage): string {
-  const source = note.originalSource!;
-  const pageWidth = source.pageWidth ?? page.width;
-  const pageHeight = source.pageHeight ?? page.height;
-  const sourceCenterX = source.x + source.width / 2;
-  const sourceCenterY = source.y + source.height / 2;
-  const midiDelta = note.midi - (note.originalMidi ?? note.midi);
-  const rewrittenY = sourceCenterY - midiDelta * STAFF_PX_PER_SEMITONE;
-  const tabY = sourceCenterY + TAB_OFFSET_PX + (note.tab ? (note.tab.stringNumber - 1) * 8 : 0);
-  const noteLeft = `${(sourceCenterX / pageWidth) * 100}%`;
-  const noteTop = `${(sourceCenterY / pageHeight) * 100}%`;
-  const rewrittenTop = `${(rewrittenY / pageHeight) * 100}%`;
-  const tabTop = `${(tabY / pageHeight) * 100}%`;
-
+function renderLayoutRewritePlacement(placement: ReturnType<typeof buildLayoutRewritePlacements>[number]): string {
   return `
-    <span class="note-mask" style="left:${noteLeft};top:${noteTop}"></span>
-    <span class="rewrite-note" style="left:${noteLeft};top:${rewrittenTop}" title="${escapeHtml(midiToNoteName(note.midi))}"></span>
+    <span class="note-mask" style="left:${placement.noteLeftPercent}%;top:${placement.sourceTopPercent}%;width:${placement.noteMaskWidth}px;height:${placement.noteMaskHeight}px"></span>
+    <span class="rewrite-note" style="left:${placement.noteLeftPercent}%;top:${placement.rewrittenTopPercent}%;width:${placement.noteWidth}px;height:${placement.noteHeight}px;--stem-height:${placement.stemHeight}px" title="${escapeHtml(placement.noteTitle)}"></span>
     ${
-      note.tab
-        ? `<span class="tab-mask" style="left:${noteLeft};top:${tabTop}"></span>
-           <span class="rewrite-tab" style="left:${noteLeft};top:${tabTop}" title="${escapeHtml(
-             `${note.tab.stringNumber}번줄 ${note.tab.fret}프렛`
-           )}">${escapeHtml(String(note.tab.fret))}</span>`
+      placement.tabValue && placement.tabLeftPercent !== undefined && placement.tabTopPercent !== undefined
+        ? `<span class="tab-mask" style="left:${placement.tabLeftPercent}%;top:${placement.tabTopPercent}%;width:${placement.tabMaskWidth}px;height:${placement.tabMaskHeight}px"></span>
+           <span class="rewrite-tab" style="left:${placement.tabLeftPercent}%;top:${placement.tabTopPercent}%;font-size:${placement.tabFontSize}px" title="${escapeHtml(
+             placement.tabTitle ?? ""
+           )}">${escapeHtml(placement.tabValue)}</span>`
         : ""
     }
   `;

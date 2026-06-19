@@ -12,12 +12,13 @@ import {
   SlidersHorizontal,
   Wand2
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type CSSProperties, useEffect, useState } from "react";
 import { getInstrumentPreset, INSTRUMENT_PRESETS } from "../../shared/instruments";
 import { transposeAndRemap } from "../../shared/fingering";
 import { midiToNoteName } from "../../shared/pitch";
 import { createEmptyScore } from "../../shared/score";
 import { buildExportHtml } from "../../shared/exportDocument";
+import { buildLayoutRewritePlacements, type LayoutRewritePlacement } from "../../shared/layoutRewrite";
 import type {
   AudiverisStatus,
   ConversionResult,
@@ -25,7 +26,6 @@ import type {
   LogInfo,
   OmrProgress,
   OpenedScoreFile,
-  NoteEvent,
   ScoreModel,
   TransposeOptions
 } from "../../shared/types";
@@ -544,62 +544,56 @@ function hasOriginalLayout(score: ScoreModel): boolean {
   return Boolean(score.layoutPages?.some((page) => page.dataUrl)) && score.tracks.some((track) => track.notes.some((note) => note.originalSource));
 }
 
-const STAFF_PX_PER_SEMITONE = 3.8;
-const TAB_OFFSET_PX = 76;
-
 function LayoutRewriteNote({
-  note,
-  pageWidth,
-  pageHeight,
+  placement,
   active
 }: {
-  note: NoteEvent;
-  pageWidth: number;
-  pageHeight: number;
+  placement: LayoutRewritePlacement;
   active: boolean;
 }) {
-  const source = note.originalSource!;
-  const sourceCenterX = source.x + source.width / 2;
-  const sourceCenterY = source.y + source.height / 2;
-  const midiDelta = note.midi - (note.originalMidi ?? note.midi);
-  const rewrittenY = sourceCenterY - midiDelta * STAFF_PX_PER_SEMITONE;
-  const tabY = sourceCenterY + TAB_OFFSET_PX + (note.tab ? (note.tab.stringNumber - 1) * 8 : 0);
-
   return (
     <>
       <span
         className="layout-note-mask"
         style={{
-          left: `${(sourceCenterX / pageWidth) * 100}%`,
-          top: `${(sourceCenterY / pageHeight) * 100}%`
+          left: `${placement.noteLeftPercent}%`,
+          top: `${placement.sourceTopPercent}%`,
+          width: `${placement.noteMaskWidth}px`,
+          height: `${placement.noteMaskHeight}px`
         }}
       />
       <span
         className={`layout-rewrite-note ${active ? "active" : ""}`}
         style={{
-          left: `${(sourceCenterX / pageWidth) * 100}%`,
-          top: `${(rewrittenY / pageHeight) * 100}%`
-        }}
-        title={midiToNoteName(note.midi)}
+          left: `${placement.noteLeftPercent}%`,
+          top: `${placement.rewrittenTopPercent}%`,
+          width: `${placement.noteWidth}px`,
+          height: `${placement.noteHeight}px`,
+          "--stem-height": `${placement.stemHeight}px`
+        } as CSSProperties}
+        title={placement.noteTitle}
       />
-      {note.tab && (
+      {placement.tabValue && placement.tabLeftPercent !== undefined && placement.tabTopPercent !== undefined && (
         <>
           <span
             className="layout-tab-mask"
             style={{
-              left: `${(sourceCenterX / pageWidth) * 100}%`,
-              top: `${(tabY / pageHeight) * 100}%`
+              left: `${placement.tabLeftPercent}%`,
+              top: `${placement.tabTopPercent}%`,
+              width: `${placement.tabMaskWidth}px`,
+              height: `${placement.tabMaskHeight}px`
             }}
           />
           <span
             className={`layout-rewrite-tab ${active ? "active" : ""}`}
             style={{
-              left: `${(sourceCenterX / pageWidth) * 100}%`,
-              top: `${(tabY / pageHeight) * 100}%`
+              left: `${placement.tabLeftPercent}%`,
+              top: `${placement.tabTopPercent}%`,
+              fontSize: `${placement.tabFontSize}px`
             }}
-            title={`${note.tab.stringNumber}번줄 ${note.tab.fret}프렛`}
+            title={placement.tabTitle}
           >
-            {note.tab.fret}
+            {placement.tabValue}
           </span>
         </>
       )}
@@ -628,22 +622,18 @@ function LayoutRewritePreview({
       <div className="layout-preview layout-rewrite-preview" aria-label="원본 레이아웃 보존 변환 결과">
         {layoutPages.map((page) => {
           const pageNotes = notes.filter((note) => note.originalSource?.page === page.page);
+          const placements = buildLayoutRewritePlacements(pageNotes, page);
           return (
             <div className="layout-page" key={page.page} style={{ aspectRatio: `${page.width} / ${page.height}` }}>
               {page.dataUrl && <img className="layout-page-source" src={page.dataUrl} alt={`${page.page}페이지 변환 악보`} />}
               <div className="layout-overlay">
-                {pageNotes.map((note) => {
-                  const source = note.originalSource!;
-                  return (
-                    <LayoutRewriteNote
-                      key={note.id}
-                      note={note}
-                      pageWidth={source.pageWidth ?? page.width}
-                      pageHeight={source.pageHeight ?? page.height}
-                      active={activeNoteId === note.id}
-                    />
-                  );
-                })}
+                {placements.map((placement) => (
+                  <LayoutRewriteNote
+                    key={placement.noteId}
+                    placement={placement}
+                    active={activeNoteId === placement.noteId}
+                  />
+                ))}
               </div>
             </div>
           );
@@ -658,19 +648,19 @@ function LayoutRewritePreview({
 
   const width = Math.max(...notes.map((note) => (note.originalSource?.x ?? 0) + (note.originalSource?.width ?? 0)), 1);
   const height = Math.max(...notes.map((note) => (note.originalSource?.y ?? 0) + (note.originalSource?.height ?? 0)), 1);
+  const fallbackPage = { page: 1, width, height };
+  const placements = buildLayoutRewritePlacements(notes, fallbackPage);
 
   return (
     <div className="layout-preview layout-rewrite-preview" aria-label="원본 레이아웃 보존 변환 결과">
       <div className="layout-page" style={{ aspectRatio: `${width} / ${height}` }}>
         <img className="layout-page-source" src={file.dataUrl} alt="변환 악보" />
         <div className="layout-overlay">
-          {notes.map((note) => (
+          {placements.map((placement) => (
             <LayoutRewriteNote
-              key={note.id}
-              note={note}
-              pageWidth={note.originalSource?.pageWidth ?? width}
-              pageHeight={note.originalSource?.pageHeight ?? height}
-              active={activeNoteId === note.id}
+              key={placement.noteId}
+              placement={placement}
+              active={activeNoteId === placement.noteId}
             />
           ))}
         </div>

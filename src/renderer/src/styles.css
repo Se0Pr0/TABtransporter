@@ -468,7 +468,7 @@ button:disabled {
   right: -1px;
   bottom: 4px;
   width: 1px;
-  height: 28px;
+  height: var(--stem-height, 28px);
   background: #111111;
   transform: rotate(18deg);
   transform-origin: bottom center;

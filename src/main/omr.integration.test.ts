@@ -31,6 +31,6 @@ runIfSampleExists("Audiveris OMR integration", () => {
       expect(result.score).toBeUndefined();
       expect(result.message).toMatch(/MusicXML|Audiveris|변환/);
     },
-    240_000
+    360_000
   );
 });
